@@ -2,7 +2,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import asyncio
 import logging
-from scapy.all import get_if_list
+# from scapy.all import get_if_list # Removed
+import psutil # Added
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,7 @@ from multiprocessing import Queue, Manager
 import multiprocessing
 from queue import Full, Empty
 import asyncio
-import psutil
+# import psutil # Already imported below, ensure it's fine or consolidate
 
 # Configuration
 from app.core.config import settings
@@ -114,42 +115,109 @@ async def create_app() -> FastAPI:
         logger.info("Initializing background services...")
 
         # Initialize services
-        firewall = FirewallManager(sio)
-        signature_engine = SignatureEngine(sio)
-        ids_signature_engine = IdsSignatureEngine(sio)
-        blocker = ApplicationBlocker(sio)
+        try:
+            firewall = FirewallManager(sio)
+            app.state.firewall = firewall
+            logger.info("FirewallManager initialized and stored in app.state.")
+        except Exception as e_init:
+            logger.critical(f"Failed to initialize FirewallManager: {e_init}", exc_info=True)
+            firewall = None # Ensure it's None if init fails
+
+        try:
+            signature_engine = SignatureEngine(sio)
+            app.state.signature_engine = signature_engine
+            logger.info("SignatureEngine initialized and stored in app.state.")
+        except Exception as e_init:
+            logger.critical(f"Failed to initialize SignatureEngine: {e_init}", exc_info=True)
+            signature_engine = None
+
+        try:
+            ids_signature_engine = IdsSignatureEngine(sio)
+            app.state.ids_signature_engine = ids_signature_engine
+            logger.info("IdsSignatureEngine initialized and stored in app.state.")
+        except Exception as e_init:
+            logger.critical(f"Failed to initialize IdsSignatureEngine: {e_init}", exc_info=True)
+            ids_signature_engine = None
+
+        try:
+            blocker = ApplicationBlocker(sio)
+            app.state.blocker = blocker
+            logger.info("ApplicationBlocker initialized and stored in app.state.")
+        except Exception as e_init:
+            logger.critical(f"Failed to initialize ApplicationBlocker: {e_init}", exc_info=True)
+            blocker = None
+
 
         # Initialize packet components INDEPENDENTLY
-        manager = Manager()
+        manager = Manager() # This itself could fail if resources are extremely low.
         sio_queue = manager.Queue(maxsize=10000)
         output_queue = Queue()
-        # ips_queue = manager.Queue(maxsize=10000)
-        sniffer_namespace = PacketSnifferNamespace("/packet_sniffer", sio_queue)
-        sio.register_namespace(sniffer_namespace)
 
-        malware_events_ns = MalwareEventsNamespace("/malware_events")
-        sio.register_namespace(malware_events_ns)
-        logger.info("Registered /malware_events namespace for EMPDRS communication.")
+        try:
+            sniffer_namespace = PacketSnifferNamespace("/packet_sniffer", sio_queue, app.state)
+            sio.register_namespace(sniffer_namespace)
+            logger.info("PacketSnifferNamespace registered.")
+        except Exception as e_init:
+            logger.critical(f"Failed to initialize/register PacketSnifferNamespace: {e_init}", exc_info=True)
 
-        intel = ThreatIntel()
-        await intel.load_from_cache()
-        asyncio.create_task(intel.fetch_and_cache_feeds())
-        ips = EnterpriseIPS(
-            "rules.json",
-            sio,
-            intel,
-            multiprocessing.cpu_count(),
-            sio_queue,
-            output_queue,
-        )
+        try:
+            malware_events_ns = MalwareEventsNamespace("/malware_events")
+            sio.register_namespace(malware_events_ns)
+            logger.info("Registered /malware_events namespace for EMPDRS communication.")
+        except Exception as e_init:
+            logger.critical(f"Failed to initialize/register MalwareEventsNamespace: {e_init}", exc_info=True)
 
-        sniffer = PacketSniffer(sio_queue)
 
-        sniffer_service = PacketSnifferService(sio, sio_queue)
+        try:
+            intel = ThreatIntel()
+            await intel.load_from_cache() # This is an awaitable call
+            asyncio.create_task(intel.fetch_and_cache_feeds()) # Background task
+            logger.info("ThreatIntel initialized and cache loading started.")
+        except Exception as e_init:
+            logger.critical(f"Failed to initialize ThreatIntel: {e_init}", exc_info=True)
+            intel = None
 
-        # loop = asyncio.get_event_loop()  # Get current loop
-        monitor = SystemMonitor(sio)
-        # cyber_defender = activate_cyber_defense(monitor)
+        try:
+            ips = EnterpriseIPS(
+                "rules.json",
+                sio,
+                intel, # Relies on intel instance
+                multiprocessing.cpu_count(),
+                sio_queue,
+                output_queue,
+            )
+            # app.state.ips_engine = ips # Storing ips in app.state if needed by other parts
+            logger.info("EnterpriseIPS initialized.")
+        except Exception as e_init:
+            logger.critical(f"Failed to initialize EnterpriseIPS: {e_init}", exc_info=True)
+            ips = None
+
+
+        try:
+            sniffer = PacketSniffer(sio_queue)
+            app.state.sniffer = sniffer
+            logger.info(f"PacketSniffer instance initialized and stored in app.state.sniffer")
+        except Exception as e_init:
+            logger.critical(f"Failed to initialize PacketSniffer: {e_init}", exc_info=True)
+            sniffer = None
+
+
+        try:
+            sniffer_service = PacketSnifferService(sio, sio_queue)
+            app.state.sniffer_service = sniffer_service
+            logger.info(f"PacketSnifferService instance initialized and stored in app.state.sniffer_service")
+        except Exception as e_init:
+            logger.critical(f"Failed to initialize PacketSnifferService: {e_init}", exc_info=True)
+            sniffer_service = None
+
+
+        try:
+            monitor = SystemMonitor(sio)
+            # app.state.system_monitor = monitor # If needed elsewhere
+            logger.info("SystemMonitor initialized.")
+        except Exception as e_init:
+            logger.critical(f"Failed to initialize SystemMonitor: {e_init}", exc_info=True)
+            monitor = None
 
         # phishing_blocker = PhishingBlocker(sio)
         # phishing_blocker = PhishingBlocker(sio)  # Initialize PhishingBlocker
@@ -164,29 +232,54 @@ async def create_app() -> FastAPI:
 
         # Store services in app state
 
-        app.state.firewall = firewall
-        app.state.signature_engine = signature_engine
-        app.state.ids_signature_engine = ids_signature_engine
+        # app.state.firewall = firewall # Already set if successful
+        # app.state.signature_engine = signature_engine # Already set
+        # app.state.ids_signature_engine = ids_signature_engine # Already set
         # app.state.phishing_blocker = (
         #     phishing_blocker  # Store PhishingBlocker in app state
         # )
-        # app.state.ips_engine = ips
+        # app.state.ips_engine = ips # Already set (or should be if ips init is successful)
         # app.state.ips_adapter = ips_adapter
-        app.state.db = AsyncSessionLocal
+        app.state.db = AsyncSessionLocal # This is a type, not an instance, usually fine.
         # app.state.autofill_task = autofill_task
-        app.state.blocker = blocker
+        # app.state.blocker = blocker # Already set
 
         # emitter_task = asyncio.create_task(start_event_emitter())  # Pass the factory
         # app.state.emitter_task = emitter_task
 
         try:
-            # loop = asyncio.get_running_loop()
-            # await loop.run_in_executor(None, sniffer.start, "Wi-Fi")
-            await sniffer_service.start()
-            await sniffer.start("Wi-Fi")
-            await monitor.start()
-            await ips.start()
-            logger.info("System monitoring started")
+            if sniffer_service:
+                await sniffer_service.start()
+                logger.info("PacketSnifferService started.")
+            else:
+                logger.warning("PacketSnifferService not initialized, cannot start.")
+
+            if sniffer:
+                await sniffer.start()
+                logger.info("PacketSniffer started.")
+            else:
+                logger.warning("PacketSniffer not initialized, cannot start.")
+
+            if monitor:
+                await monitor.start() # SystemMonitor's start method
+                logger.info("SystemMonitor started.")
+            else:
+                logger.warning("SystemMonitor not initialized, cannot start.")
+
+            if ips:
+                await ips.start()
+                logger.info("EnterpriseIPS started.")
+            else:
+                logger.warning("EnterpriseIPS not initialized, cannot start.")
+
+            # logger.info("System monitoring started") # Original log, can be refined or removed
+            logger.info("All core background services attempted to start.")
+
+        except Exception as e_start_services:
+            logger.critical(f"Error during startup of core services: {e_start_services}", exc_info=True)
+            # Depending on which service failed, app might be in an unstable state.
+            # Consider how to handle this (e.g., prevent app from fully starting if critical services fail)
+
             # Start packet sniffer with IPS integration
 
             # Start IPS updates task
@@ -304,9 +397,15 @@ async def create_app() -> FastAPI:
 # Socket.IO events
 @sio.event
 async def connect(sid, environ):
-    # interfaces = get_if_list()
-    # await sio.emit("interfaces", interfaces, to=sid)
-    logger.info(f"Client connected: {sid[:8]}...")
+    try:
+        interfaces_info = psutil.net_if_addrs()
+        interfaces = list(interfaces_info.keys())
+        logger.info(f"Found interfaces using psutil: {interfaces}")
+    except Exception as e:
+        logger.error(f"Error getting interfaces using psutil: {e}. Falling back to empty list.")
+        interfaces = []
+    await sio.emit("interfaces_list", interfaces, to=sid)
+    logger.info(f"Sent interfaces list to client {sid[:8]}: {interfaces}")
 
 
 # @sio.on("get_interfaces")

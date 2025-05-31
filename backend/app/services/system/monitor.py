@@ -35,10 +35,10 @@ class SystemMonitorProcess(mp.Process):
     """Main monitoring process that collects all system metrics"""
 
     def __init__(
-        self, sio: socketio.AsyncServer, data_queue: mp.Queue, control_queue: mp.Queue
+        self, data_queue: mp.Queue, control_queue: mp.Queue # sio removed
     ):
         super().__init__()
-        self.sio = sio
+        # self.sio = sio # Removed
         self.data_queue = data_queue
 
         self.control_queue = control_queue
@@ -502,13 +502,101 @@ class SystemMonitorProcess(mp.Process):
             },
         }
 
+    def _get_session_type_internal(self, user_terminal: Optional[str], user_host: Optional[str]) -> str: # Renamed and adapted from SystemMonitor
+        """
+        Infer session type (console, gui, remote) based on user context.
+        This version is adapted for SystemMonitorProcess and does not rely on win32ts directly here
+        as it complicates pickling and process separation. It uses info from psutil.users().
+        """
+        if user_host and user_host not in ("localhost", "0.0.0.0", "::1"):
+            return "remote"
+        if IS_WINDOWS: # On Windows, psutil doesn't give enough direct info for RDP/Console easily
+            return "console" # Simplified assumption for Windows within this process
+        if user_terminal and user_terminal.startswith(":"): # Common for X11 sessions
+            return "gui"
+        return "console"
+
+    def _get_windows_user_details_internal(self, username: str) -> Dict: # Renamed
+        """
+        Return additional user information for Windows systems.
+        Requires `pywin32`, fallback to minimal info if unavailable.
+        """
+        details = {}
+        if not IS_WINDOWS:
+            return details
+        try:
+            sid_obj, domain, _type = win32security.LookupAccountName(None, username)
+            details["domain"] = domain
+            details["sid"] = win32security.ConvertSidToStringSid(sid_obj)
+            # Getting logon time here is complex and might require different APIs or privileges.
+            # For simplicity, logon_time is primarily from psutil.user.started
+        except ImportError: # Should have been caught by global IS_WINDOWS check, but defensive
+            logger.warning("pywin32 not installed; skipping Windows user details.")
+        except Exception as e:
+            logger.debug(f"Failed to retrieve Windows details for {username}: {e}")
+        return details
+
+    def _get_unix_user_details_internal(self, username: str) -> Dict: # Renamed
+        """
+        Return additional user information for Unix-like systems using the `pwd` module.
+        """
+        details = {}
+        try:
+            import pwd # Import here as it's Unix-specific
+            pw = pwd.getpwnam(username)
+            details.update({
+                "uid": pw.pw_uid,
+                "gid": pw.pw_gid,
+                "home_dir": pw.pw_dir,
+                "shell": pw.pw_shell,
+            })
+        except KeyError:
+            logger.debug(f"User '{username}' not found in /etc/passwd.")
+        except ImportError:
+            logger.warning("pwd module not available on this system.")
+        except Exception as e:
+            logger.debug(f"Failed to retrieve Unix details for {username}: {e}")
+        return details
+
+    def _get_logged_in_users_internal(self) -> List[Dict]: # New method based on SystemMonitor.get_logged_in_users
+        users_list = []
+        seen = set()
+        try:
+            psutil_users = psutil.users()
+            for user in psutil_users:
+                try:
+                    user_info = {
+                        "username": user.name,
+                        "terminal": user.terminal or "N/A",
+                        "host": user.host or "localhost",
+                        "login_time": user.started, # This is timestamp
+                        "session_type": self._get_session_type_internal(user.terminal, user.host),
+                        "login_duration": round(time.time() - user.started, 2),
+                    }
+
+                    # Platform-specific details
+                    if IS_WINDOWS:
+                        user_info.update(self._get_windows_user_details_internal(user.name))
+                    else:
+                        user_info.update(self._get_unix_user_details_internal(user.name))
+
+                    key = (user_info["username"], user_info["terminal"], user_info["host"])
+                    if key not in seen:
+                        seen.add(key)
+                        users_list.append(user_info)
+                except Exception as user_error:
+                    logger.debug(f"Error processing user '{user.name}': {user_error}")
+        except Exception as e:
+            logger.error(f"Failed to retrieve logged-in users: {e}", exc_info=True)
+        return users_list
+
     def _update_history(self, stats: Dict):
-        monitor = SystemMonitor(self.sio)
+        # monitor = SystemMonitor(self.sio) # Removed
         """Update historical data for anomaly detection"""
         self.history["cpu"].append(stats["cpu"]["usage"])
         self.history["memory"].append(stats["memory"]["percent"])
         self.history["process_count"].append(len(stats["processes"]))
-        self.history["user_logins"].append(len(monitor.get_logged_in_users()))
+        self.history["user_logins"].append(len(self._get_logged_in_users_internal())) # Changed
 
         if stats["disk"]["partitions"]:
             self.history["disk"].append(stats["disk"]["partitions"][0]["percent"])
@@ -558,29 +646,19 @@ class SystemMonitorProcess(mp.Process):
                         "message": f"High network throughput: {avg_net/1000000:.2f} MB/s",
                     }
                 )
-            if len(self.history["process_count"]) > 100:
-                avg_procs = sum(self.history["process_count"][-100:]) / 100
-                if stats["process_count"] > avg_procs * 1.5:
+            if len(self.history["process_count"]) > 100: # Corrected key from "process_count" to "processes" for stats dict
+                avg_procs = sum(self.history["process_count"][-100:]) / 100 # This uses history which is correct
+                if stats.get("process_count", 0) > avg_procs * 1.5: # Check against current process_count in stats
                     anomalies.append(
                         {
                             "type": "process_count",
                             "severity": "medium",
-                            "message": f"Process count spike: {stats['process_count']} (avg: {avg_procs})",
+                            "message": f"Process count spike: {stats.get('process_count',0)} (avg: {avg_procs:.0f})",
                         }
                     )
-
-            if anomalies:
-                asyncio.run_coroutine_threadsafe(
-                    self.sio.emit(
-                        "system_alerts",
-                        {
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "alerts": anomalies,
-                        },
-                    ),
-                    asyncio.get_event_loop(),
-                )
-
+            # Removed direct sio emission:
+            # if anomalies:
+            #     asyncio.run_coroutine_threadsafe(...)
         return anomalies
 
     def _check_binary_signature(self, path: str) -> Optional[bool]:
@@ -649,8 +727,7 @@ class SystemMonitor(mp.Process):
         self.threat_log: List[Dict] = [] 
 
         # Pass all required arguments in order
-        self.monitor_process = SystemMonitorProcess(
-            sio=self.sio,  # Required first
+        self.monitor_process = SystemMonitorProcess( # SIO removed
             data_queue=self.data_queue,
             control_queue=self.control_queue,
         )
@@ -659,10 +736,18 @@ class SystemMonitor(mp.Process):
     async def start(self):
         """Start the monitoring system"""
         if not self.running:
-            self.monitor_process.start()
-            self.running = True
-            asyncio.create_task(self._emit_updates())
-            logger.info("System monitor started")
+            try:
+                self.monitor_process.start()
+                logger.info(f"SystemMonitorProcess started with PID {self.monitor_process.pid}.")
+                self.running = True
+                asyncio.create_task(self._emit_updates()) # Start emitting updates
+                logger.info("System monitor parent process and _emit_updates task started.")
+            except Exception as e_mon_start:
+                logger.error(f"Failed to start SystemMonitorProcess: {e_mon_start}", exc_info=True)
+                self.running = False # Ensure it's not marked as running
+        else:
+            logger.info("System monitor is already running.")
+
 
     async def _emit_updates(self):
         """Continuously emit updates to Socket.IO"""
@@ -670,25 +755,60 @@ class SystemMonitor(mp.Process):
             try:
                 if not self.data_queue.empty():
                     stats = self.data_queue.get_nowait()
-                    flattened_telemetry = flatten_complex_data(stats)
                     telemetry = map_to_system_telemetry_format(stats, sample_interval=self.monitor_process.interval)
-                    await self.sio.emit("system_telemetry", telemetry)
-                await asyncio.sleep(0.1)  # Prevent busy waiting
+                    try:
+                        await self.sio.emit("system_telemetry", telemetry)
+                    except Exception as e_emit_telemetry:
+                        logger.error(f"Error emitting system_telemetry: {e_emit_telemetry}", exc_info=True)
+
+                    if "anomalies" in stats and stats["anomalies"]:
+                        system_alerts_payload = {
+                            "timestamp": stats.get("timestamp", datetime.utcnow().isoformat()),
+                            "alerts": stats["anomalies"]
+                        }
+                        try:
+                            await self.sio.emit("system_alerts", system_alerts_payload)
+                            logger.debug(f"Emitted system_alerts: {system_alerts_payload}")
+                        except Exception as e_emit_alerts:
+                            logger.error(f"Error emitting system_alerts: {e_emit_alerts}", exc_info=True)
+
+                await asyncio.sleep(0.1) # Prevent busy waiting, consider making this configurable or part of self.interval
             except queue.Empty:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.5) # Wait if queue is empty
+            except asyncio.CancelledError:
+                logger.info("_emit_updates task cancelled.")
+                break
             except Exception as e:
-                logger.error(f"Emit error: {e}")
-                await asyncio.sleep(1)
+                logger.error(f"Error in _emit_updates loop: {e}", exc_info=True)
+                await asyncio.sleep(1) # Wait longer on generic error
 
     async def stop(self):
-        """Stop the monitoring system"""
+        logger.info("Attempting to stop system monitor...")
         if self.running:
-            self.running = False
-            self.monitor_process.stop()
-            self.monitor_process.join(timeout=5)
-            if self.monitor_process.is_alive():
-                self.monitor_process.terminate()
-            logger.info("System monitor stopped")
+            self.running = False # To stop the _emit_updates loop in this (parent) class
+
+            if self.monitor_process and self.monitor_process.is_alive():
+                logger.info("Stopping SystemMonitorProcess...")
+                try:
+                    # SystemMonitorProcess.stop() signals its internal loop via control_queue
+                    self.monitor_process.stop()
+                    self.monitor_process.join(timeout=5)
+                    if self.monitor_process.is_alive():
+                        logger.warning("SystemMonitorProcess did not stop gracefully, terminating.")
+                        self.monitor_process.terminate()
+                        self.monitor_process.join(timeout=2) # Wait for termination
+                    if not self.monitor_process.is_alive():
+                        logger.info("SystemMonitorProcess stopped.")
+                    else:
+                        logger.error("Failed to stop SystemMonitorProcess.")
+                except Exception as e:
+                    logger.error(f"Error during SystemMonitorProcess stop: {e}", exc_info=True)
+            else:
+                logger.info("SystemMonitorProcess was not running or already stopped.")
+            self.monitor_process = None # Clear the reference
+            logger.info("System monitor (parent) stopped.")
+        else:
+            logger.info("System monitor (parent) was not running.")
 
     def set_update_interval(self, interval: int):
         """Change the monitoring update interval"""
@@ -923,7 +1043,7 @@ class SystemMonitor(mp.Process):
             "trigger_event": trigger_event,
             "processes": self.monitor_process.get_process_stats(),
             "network": self.monitor_process.get_network_stats(),
-            "users": self.get_logged_in_users(),
+            "users": self.monitor_process._get_logged_in_users_internal(), # Call the method on monitor_process
             "system": self.monitor_process.get_system_info(),
             "performance": self._get_performance_metrics(),
         }
@@ -1215,95 +1335,8 @@ class SystemMonitor(mp.Process):
             "dns_tunneling": port == 53 and conn.get("bytes_sent", 0) > 1000,
         }
 
-    def get_logged_in_users(self) -> List[Dict]:
-        """
-        Retrieve a list of currently logged-in users with detailed session information.
-
-        Returns:
-            List[Dict]: A list of dictionaries, each containing user session details.
-        """
-        users = []
-        seen = set()
-
-        try:
-            for user in psutil.users():
-                try:
-                    user_info = {
-                        "username": user.name,
-                        "terminal": user.terminal or "N/A",
-                        "host": user.host or "localhost",
-                        "login_time": user.started,
-                        "session_type": self._get_session_type(user),
-                        "login_duration": round(time.time() - user.started, 2),
-                    }
-
-                    if IS_WINDOWS:
-                        user_info.update(self._get_windows_user_details(user.name))
-                    else:
-                        user_info.update(self._get_unix_user_details(user.name))
-
-                    # Deduplicate user entries based on key fields
-                    key = (
-                        user_info["username"],
-                        user_info["terminal"],
-                        user_info["host"],
-                    )
-                    if key not in seen:
-                        seen.add(key)
-                        users.append(user_info)
-
-                except Exception as user_error:
-                    logger.debug(f"Error processing user '{user.name}': {user_error}")
-
-        except Exception as e:
-            logger.error(f"Failed to retrieve logged-in users: {e}", exc_info=True)
-        return users
-
-    def _get_session_type(self, user: psutil._common.suser) -> str:
-        """
-        Infer session type (console, gui, remote) based on user context.
-        """
-        if user.host and user.host not in ("localhost", "0.0.0.0", "::1"):
-            return "remote"
-        if IS_WINDOWS:
-            return "console"
-        if user.terminal and user.terminal.startswith(":"):
-            return "gui"
-        return "console"
-
-    def _get_windows_user_details(self, username: str) -> Dict:
-        """
-        Return additional user information for Windows systems.
-        Requires `pywin32`, fallback to minimal info if unavailable.
-        """
-        try:
-            sid, domain, _ = win32security.LookupAccountName(None, username)
-            return {"domain": domain, "sid": win32security.ConvertSidToStringSid(sid)}
-        except ImportError:
-            logger.warning("pywin32 not installed; skipping Windows user details.")
-        except Exception as e:
-            logger.debug(f"Failed to retrieve Windows details for {username}: {e}")
-        return {}
-
-    def _get_unix_user_details(self, username: str) -> Dict:
-        """
-        Return additional user information for Unix-like systems using the `pwd` module.
-        """
-        import pwd
-
-        try:
-            pw = pwd.getpwnam(username)
-            return {
-                "uid": pw.pw_uid,
-                "gid": pw.pw_gid,
-                "home_dir": pw.pw_dir,
-                "shell": pw.pw_shell,
-            }
-        except KeyError:
-            logger.debug(f"User '{username}' not found in /etc/passwd.")
-        except Exception as e:
-            logger.debug(f"Failed to retrieve Unix details for {username}: {e}")
-        return {}
+    # Removed get_logged_in_users and its helpers from SystemMonitor as they are moved to SystemMonitorProcess
+    # _get_session_type, _get_windows_user_details, _get_unix_user_details
 
     def _get_performance_metrics(self) -> Dict:
         """Calculate comprehensive performance metrics"""

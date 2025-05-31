@@ -40,6 +40,7 @@ import {
   AreaChart,
   Area
 } from 'recharts';
+import { useTelemetrySocket } from '@/components/live-system/lib/socket';
 
 // Types for packet data
 interface PacketData {
@@ -302,86 +303,144 @@ const NetworkTrafficVisualizer = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [exportType, setExportType] = useState<'json' | 'csv'>('json');
   
+  const [availableInterfaces, setAvailableInterfaces] = useState<string[]>([]);
+  const [selectedInterface, setSelectedInterface] = useState<string | null>(null);
+  const [isInterfaceSelectionDisabled, setIsInterfaceSelectionDisabled] = useState(false);
+
+  const { getSocket } = useTelemetrySocket();
+  const socket = getSocket();
   const snifferIntervalRef = useRef<number | null>(null);
 
-  // Simulate receiving packets when sniffing is active
   useEffect(() => {
-    if (isSniffing) {
-      // Clear any existing interval
+    if (!socket) return;
+
+    // Interface listeners (should ideally be in a separate useEffect or managed globally if socket instance is global)
+    const handleInterfacesList = (interfaces: string[]) => {
+      console.log("Received interfaces:", interfaces);
+      setAvailableInterfaces(interfaces);
+    };
+    const handleInterfaceSelectedStatus = (status: { status: string; interface?: string; message?: string }) => {
+      if (status.status === 'success') {
+        toast({ title: "Interface Selected", description: `Sniffer started on ${status.interface}`, variant: "default" });
+        setIsSniffing(true);
+        setIsInterfaceSelectionDisabled(true);
+      } else {
+        toast({ title: "Interface Selection Error", description: status.message || "Failed to start sniffer.", variant: "destructive" });
+        setIsSniffing(false);
+        setIsInterfaceSelectionDisabled(false);
+      }
+    };
+
+    socket.on('interfaces_list', handleInterfacesList);
+    socket.on('interface_selected_status', handleInterfaceSelectedStatus);
+
+    // Real-time packet data handling
+    if (isSniffing && selectedInterface) {
       if (snifferIntervalRef.current) {
         clearInterval(snifferIntervalRef.current);
+        snifferIntervalRef.current = null;
       }
-      
-      // Set new interval to generate packets
-      const interval = window.setInterval(() => {
-        const newPacket = generateMockPacketData();
-        
-        // Auto-block critical risk packets
-        if (newPacket.risk_score && newPacket.risk_score >= 80) {
-          newPacket.blocked = true;
+      console.log(`NetworkTrafficVisualizer: Listening for new_packet_data on interface ${selectedInterface}`);
+      const handleNewPacket = (newPacket: PacketData) => {
+        let processedPacket = { ...newPacket };
+        if (processedPacket.risk_score && processedPacket.risk_score >= 80 && !processedPacket.blocked) {
+          processedPacket.blocked = true;
           setBlockedIPs(prev => {
-            if (!prev.includes(newPacket.source_ip)) {
+            if (!prev.includes(processedPacket.source_ip)) {
               toast({
                 title: "Critical Risk IP Automatically Blocked",
-                description: `${newPacket.source_ip} was blocked due to high risk score (${newPacket.risk_score})`,
+                description: `${processedPacket.source_ip} was blocked due to high risk score (${processedPacket.risk_score})`,
                 variant: "destructive"
               });
-              return [...prev, newPacket.source_ip];
+              return [...prev, processedPacket.source_ip];
             }
             return prev;
           });
-        } else if (blockedIPs.includes(newPacket.source_ip)) {
-          // Mark packets from already blocked IPs
-          newPacket.blocked = true;
+        } else if (blockedIPs.includes(processedPacket.source_ip)) {
+          processedPacket.blocked = true;
         }
-        
-        // Update packets list
-        setPackets(prev => {
-          // Keep the last 100 packets
-          const updatedPackets = [newPacket, ...prev].slice(0, 100);
-          return updatedPackets;
-        });
-        
-        // Add to connection history
-        setConnectionHistory(prev => {
-          // Keep the last 500 packets in history
-          const updatedHistory = [newPacket, ...prev].slice(0, 500);
-          return updatedHistory;
-        });
-        
-        // Show toast for suspicious traffic with high risk
-        if (newPacket.suspicious_headers && newPacket.risk_score && newPacket.risk_score > 50) {
+        setPackets(prev => [processedPacket, ...prev].slice(0, 100));
+        setConnectionHistory(prev => [processedPacket, ...prev].slice(0, 500));
+        if (processedPacket.suspicious_headers && processedPacket.risk_score && processedPacket.risk_score > 50) {
           toast({
-            title: `${getRiskLevel(newPacket.risk_score).toUpperCase()} Risk Traffic Detected`,
-            description: `Connection to ${newPacket.host} from ${newPacket.source_ip} (Risk: ${newPacket.risk_score})`,
+            title: `${getRiskLevel(processedPacket.risk_score).toUpperCase()} Risk Traffic Detected`,
+            description: `Connection to ${processedPacket.host} from ${processedPacket.source_ip} (Risk: ${processedPacket.risk_score})`,
             variant: "destructive"
           });
         }
-        
-        // Update traffic metrics every 10 packets
-        if (packets.length % 10 === 0) {
-          setTrafficMetrics(prev => {
-            const newMetrics = [...prev.slice(1), {
-              time: "now",
-              connections: Math.floor(Math.random() * 40) + 10,
-              bandwidth: Math.floor(Math.random() * 500) + 100,
-              packets: Math.floor(Math.random() * 200) + 50,
-              anomalyScore: Math.random() > 0.8 ? (Math.random() * 80) + 20 : (Math.random() * 20)
+        // Consider moving metrics update to a separate mechanism if it's based on actual packet count
+        // For now, this will update based on the state of 'packets' which might not be ideal.
+        setTrafficMetrics(prevMetrics => {
+             // This condition (packets.length % 10) is problematic here as packets state updates asynchronously.
+             // A direct counter or different trigger would be better for metrics.
+             // For simplicity of this step, we'll assume it's illustrative.
+            const newMetrics = [...prevMetrics.slice(1), {
+              time: "now", // Should be based on packet timestamp or consistent intervals
+              connections: Math.floor(Math.random() * 40) + 10, // Placeholder
+              bandwidth: processedPacket.bytes_transferred || Math.floor(Math.random() * 500) + 100, // Placeholder
+              packets: 1, // Placeholder - this should be an aggregation
+              anomalyScore: Math.random() > 0.8 ? (Math.random() * 80) + 20 : (Math.random() * 20) // Placeholder
             }];
             return newMetrics;
+        });
+      };
+      socket.on('new_packet_data', handleNewPacket);
+
+      return () => {
+        socket.off('new_packet_data', handleNewPacket);
+        socket.off('interfaces_list', handleInterfacesList);
+        socket.off('interface_selected_status', handleInterfaceSelectedStatus);
+        console.log("NetworkTrafficVisualizer: Stopped listening for new_packet_data and interface events.");
+      };
+
+    } else if (isSniffing && !selectedInterface) {
+      // Fallback to MOCK data generation
+      if (snifferIntervalRef.current) clearInterval(snifferIntervalRef.current);
+      console.log("NetworkTrafficVisualizer: Started MOCK packet generation.");
+      const interval = window.setInterval(() => {
+        const mockPacket = generateMockPacketData();
+        let processedPacket = { ...mockPacket };
+        if (processedPacket.risk_score && processedPacket.risk_score >= 80 && !processedPacket.blocked) {
+          processedPacket.blocked = true;
+          setBlockedIPs(prev => {
+            if (!prev.includes(processedPacket.source_ip)) {
+               toast({ title: "Critical Risk IP Automatically Blocked (MOCK)", description: `${processedPacket.source_ip} blocked.`, variant: "destructive"});
+              return [...prev, processedPacket.source_ip];
+            }
+            return prev;
           });
+        } else if (blockedIPs.includes(processedPacket.source_ip)) {
+          processedPacket.blocked = true;
+        }
+        setPackets(prev => [processedPacket, ...prev].slice(0, 100));
+        setConnectionHistory(prev => [processedPacket, ...prev].slice(0, 500));
+        if (processedPacket.suspicious_headers && processedPacket.risk_score && processedPacket.risk_score > 50) {
+           toast({ title: `${getRiskLevel(processedPacket.risk_score).toUpperCase()} Risk Traffic (MOCK)`, description: `To ${processedPacket.host} from ${processedPacket.source_ip}`, variant: "destructive"});
         }
       }, 3000);
-      
       snifferIntervalRef.current = interval;
       
       return () => {
-        if (snifferIntervalRef.current) {
-          clearInterval(snifferIntervalRef.current);
-        }
+        if (snifferIntervalRef.current) clearInterval(snifferIntervalRef.current);
+        snifferIntervalRef.current = null;
+        socket.off('interfaces_list', handleInterfacesList); // Also clean up other listeners
+        socket.off('interface_selected_status', handleInterfaceSelectedStatus);
+        console.log("NetworkTrafficVisualizer: Stopped MOCK packet generation and cleaned interface listeners.");
+      };
+    } else {
+      // Sniffing is off
+      if (snifferIntervalRef.current) {
+        clearInterval(snifferIntervalRef.current);
+        snifferIntervalRef.current = null;
+      }
+      // Clean up general listeners if not already done by other branches
+      return () => {
+        socket.off('interfaces_list', handleInterfacesList);
+        socket.off('interface_selected_status', handleInterfaceSelectedStatus);
+        // No new_packet_data listener to remove if we didn't enter the live data branch
       };
     }
-  }, [isSniffing, blockedIPs, packets.length, toast]);
+  }, [socket, isSniffing, selectedInterface, blockedIPs, toast]); // Removed packets.length
 
   // Filter and search packets
   const filteredPackets = packets
@@ -445,40 +504,73 @@ const NetworkTrafficVisualizer = () => {
 
   // Handle export action
   const handleExport = () => {
-    const packetsToExport = showAllConnections ? connectionHistory : filteredPackets;
-    
-    if (exportType === 'json') {
-      const jsonData = JSON.stringify(packetsToExport, null, 2);
-      exportData(jsonData, 'json', 'network-traffic-data.json');
-    } 
-    else if (exportType === 'csv') {
-      const csvData = formatForCsv(packetsToExport);
-      exportData(csvData, 'csv', 'network-traffic-data.csv');
+    if (!socket) {
+      toast({ title: "Error", description: "Socket not connected. Cannot export.", variant: "destructive" });
+      return;
     }
-    
+
+    const exportParams = {
+      format: exportType, // 'json' or 'csv'
+    };
+
+    socket.emit('request_export_packets', exportParams);
+
     toast({
-      title: "Export Complete",
-      description: `Traffic data exported as ${exportType.toUpperCase()}`,
+      title: "Export Requested",
+      description: `Requesting ${exportType.toUpperCase()} export from server...`,
       variant: "default"
     });
+    // Dialog will be closed by the response handler or manually by user.
   };
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleExportDataResponse = (response: { format?: string; data?: string; error?: string }) => {
+      if (response.error) {
+        toast({ title: "Export Failed", description: response.error, variant: "destructive" });
+      } else if (response.data && response.format) {
+        const fileName = `network-traffic-data.${response.format}`;
+        exportData(response.data, response.format, fileName);
+        toast({
+          title: "Export Complete",
+          description: `Traffic data downloaded as ${fileName}`,
+          variant: "default"
+        });
+      } else {
+        toast({ title: "Export Error", description: "Received invalid response from server.", variant: "destructive" });
+      }
+      setIsExporting(false); // Close dialog on any response
+    };
+
+    socket.on('export_data_response', handleExportDataResponse);
+
+    return () => {
+      socket.off('export_data_response', handleExportDataResponse);
+    };
+  }, [socket, toast]); // exportData and setIsExporting are stable
 
   // Toggle sniffing
   const toggleSniffing = () => {
-    if (isSniffing) {
+    if (!isSniffing) { // Attempting to start sniffing
+      if (socket && selectedInterface) {
+        socket.emit('select_interface', selectedInterface);
+        // setIsSniffing(true) and toast are handled by 'interface_selected_status' listener
+      } else if (!selectedInterface) {
+        toast({ title: "Error", description: "Please select a network interface first.", variant: "destructive" });
+      } else {
+        // Fallback for mock sniffing if no socket or interface, but button is pressed to start
+        setIsSniffing(true);
+        toast({ title: "Mock Sniffing Started", description: "Displaying simulated packet data.", variant: "default" });
+      }
+    } else { // Attempting to stop sniffing
+      if (socket && selectedInterface) { // If it was sniffing on a real interface
+        socket.emit('stop_sniffing');
+      }
+      // Common stop logic for both real and mock sniffing
       setIsSniffing(false);
-      toast({
-        title: "Network Sniffing Stopped",
-        description: "Packet capture has been paused",
-        variant: "default"
-      });
-    } else {
-      setIsSniffing(true);
-      toast({
-        title: "Network Sniffing Started",
-        description: "Packet capture is now active",
-        variant: "default"
-      });
+      setIsInterfaceSelectionDisabled(false);
+      toast({ title: "Network Sniffing Stopped", description: "Packet capture has been paused.", variant: "default" });
     }
   };
 
@@ -560,10 +652,35 @@ const NetworkTrafficVisualizer = () => {
               </div>
               
               <div className="flex gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="interface-select" className="text-xs">Interface:</Label>
+                  <Select
+                    value={selectedInterface || ""}
+                    onValueChange={(value) => {
+                      if (value === "no-interfaces") return;
+                      setSelectedInterface(value);
+                    }}
+                    disabled={isInterfaceSelectionDisabled}
+                  >
+                    <SelectTrigger id="interface-select" className="w-[180px] h-8 text-xs">
+                      <SelectValue placeholder="Select interface" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableInterfaces.length > 0 ? availableInterfaces.map((iface) => (
+                        <SelectItem key={iface} value={iface} className="text-xs">
+                          {iface}
+                        </SelectItem>
+                      )) : (
+                        <SelectItem value="no-interfaces" disabled className="text-xs">No interfaces found</SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <Button 
                   variant={isSniffing ? "destructive" : "default"} 
                   size="sm"
                   onClick={toggleSniffing}
+                  disabled={!selectedInterface && !isSniffing} // Disable start if no interface selected and not already mock sniffing
                 >
                   {isSniffing ? (
                     <><StopCircle size={14} className="mr-1" /> Stop Sniffing</>

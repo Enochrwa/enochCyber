@@ -6,6 +6,9 @@ from multiprocessing import Queue
 from queue import Empty
 from typing import Optional
 from socketio import AsyncServer
+import csv # Added
+import io  # Added
+import json # Added
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +19,8 @@ class PacketSnifferService:
         self.sio_queue = sio_queue
         self._running = False
         self.monitor_task: Optional[asyncio.Task] = None
+        self.exportable_packets = [] # Added
+        self.export_data_lock = asyncio.Lock() # Added
 
     @property
     def is_running(self) -> bool:
@@ -74,6 +79,15 @@ class PacketSnifferService:
         while self._running:
             try:
                 event = await asyncio.to_thread(self.sio_queue.get, True, 1)
+
+                # Store exportable packets
+                if isinstance(event, tuple) and len(event) == 2:
+                    event_type, data = event
+                    if event_type == "new_packet_data":
+                        async with self.export_data_lock:
+                            self.exportable_packets.append(data)
+                            self.exportable_packets = self.exportable_packets[-5000:] # Keep last 5000
+
                 await self._emit_event(event)
 
             except Empty:
@@ -84,3 +98,12 @@ class PacketSnifferService:
                 logger.exception("🔥 [Service] error in monitor loop")
                 await asyncio.sleep(1)
         logger.info("📡 [Service] monitor loop exiting")
+
+    async def get_packets_for_export(self):
+        async with self.export_data_lock:
+            return list(self.exportable_packets) # Return a copy
+
+    async def clear_exportable_packets(self):
+        async with self.export_data_lock:
+            self.exportable_packets.clear()
+            logger.info("Cleared exportable packet list.")

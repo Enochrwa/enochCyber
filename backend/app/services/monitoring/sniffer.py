@@ -47,6 +47,14 @@ from scapy.layers.http import HTTPRequest, HTTPResponse
 from scapy.packet import Packet
 import scapy.layers.http as HTTP
 from scapy.layers.inet6 import IPv6ExtHdrFragment
+import asyncio
+# from scapy.all import conf # Removed for psutil default interface
+import psutil # Added
+import socket # Added
+from datetime import datetime
+from queue import Full
+from multiprocessing import Process, Event
+from .reporter_helper import _reporter_loop
 import ipaddress
 from sqlalchemy.inspection import inspect
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
@@ -69,9 +77,10 @@ from ...utils.format_http_data import transform_http_activity
 from ...utils.save_to_json import save_http_data_to_json, save_packet_data_to_json, save_features_to_json, save_feature_vectors_to_json
 # from ..ips.engine import IPSEngine
 
+import os # Added
 # Configure logging
 logger = logging.getLogger("packet_sniffer")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.INFO) # Consider DEBUG for more verbose child process logging initially
 
 from .utils.constants import BASE64_CHARS, cipher_name,SCORING_WEIGHTS,WEAK_CIPHERS,RECOMMENDED_CIPHERS,KNOWN_SERVICES  
 
@@ -133,14 +142,29 @@ class PacketSniffer:
             with gzip.open(scaler_p,"rb") as f: scaler = joblib.load(f)
             with gzip.open(model_p ,"rb") as f: model  = joblib.load(f)
             self.models[attack] = (scaler, model, thresh)
-        
+        logger.info(f"Loaded {len(self.models)} ML models.")
         
 
-        self.feature_extractor = AdvancedFeatureExtractor(
-            cleanup_interval=300, flow_timeout=120
-        )
-        self.packet_processor = EnhancedPacketProcessor()
-        self.threat_detector = ThreatDetector(self.feature_extractor, self.sio_queue)
+        try:
+            self.feature_extractor = AdvancedFeatureExtractor(cleanup_interval=300, flow_timeout=120)
+            logger.info("Feature extractor initialized.")
+        except Exception as e_fe:
+            logger.error(f"Failed to initialize AdvancedFeatureExtractor: {e_fe}", exc_info=True)
+            self.feature_extractor = None
+        
+        try:
+            self.packet_processor = EnhancedPacketProcessor()
+            logger.info("EnhancedPacketProcessor initialized.")
+        except Exception as e_epp:
+            logger.error(f"Failed to initialize EnhancedPacketProcessor: {e_epp}", exc_info=True)
+            self.packet_processor = None
+
+        try:
+            self.threat_detector = ThreatDetector(self.feature_extractor, self.sio_queue) # Requires feature_extractor
+            logger.info("ThreatDetector initialized.")
+        except Exception as e_td:
+            logger.error(f"Failed to initialize ThreatDetector: {e_td}", exc_info=True)
+            self.threat_detector = None
         # If you’ll do ML inference:
         # self.enhanced_processor = EnhancedPacketProcessor()
         # self.enhanced_processor.load_model("path/to/your/model.pkl")
@@ -223,86 +247,108 @@ class PacketSniffer:
         # self.reporter_process.start()
 
     def _run_sniffer_process(self, interface: str, sio_queue: Queue):
-        """Runs the AsyncSniffer in a separate process."""
-        logger.info("Sniffer process started on interface %s", interface)
-        self.sio_queue = sio_queue  # Crucial for the new process
+        logger.info(f"Sniffer process starting on interface {interface} with PID {os.getpid()}")
 
-        sniffer = None
+        self.sio_queue = sio_queue # Set the queue for this process instance
+        logger.info(f"SIO Queue set in child process: {type(sio_queue)}")
+
+        if hasattr(self, 'threat_detector') and self.threat_detector is not None:
+            self.threat_detector.sio_queue = sio_queue # Ensure child uses the correct queue
+            logger.info("Updated threat_detector's sio_queue in child process.")
+
+        if hasattr(self, 'signature_engine') and self.signature_engine is not None:
+            self.signature_engine.sio_queue = sio_queue
+            logger.info("Updated signature_engine's sio_queue in child process.")
+
+        # if hasattr(self, 'phishing_blocker') and self.phishing_blocker is not None:
+        #    if hasattr(self.phishing_blocker, 'sio_queue'):
+        #        self.phishing_blocker.sio_queue = sio_queue
+        #        logger.info("Updated phishing_blocker's sio_queue in child process.")
+
+        sniffer_instance = None
         try:
-            sniffer = AsyncSniffer(
+            logger.info(f"Initializing AsyncSniffer for interface {interface}")
+            sniffer_instance = AsyncSniffer(
                 iface=interface,
                 filter="not (dst net 127.0.0.1 or multicast)",
                 prn=self._packet_handler,
                 store=False,
                 promisc=True
             )
-            sniffer.start()
-            logger.info("AsyncSniffer started sniffing in dedicated process on %s", interface)
-            self.stop_sniffing_event.wait()  # Wait until stop event is set
+            sniffer_instance.start()
+            logger.info(f"AsyncSniffer started sniffing on {interface}")
+
+            if hasattr(self, 'stop_sniffing_event') and self.stop_sniffing_event:
+                self.stop_sniffing_event.wait()
+                logger.info("Stop event received by sniffer process.")
+            else:
+                logger.warning("stop_sniffing_event not found in sniffer process, will run indefinitely or until error.")
+
         except Exception as e:
-            logger.error(f"Error in sniffer process on interface {interface}: {e}", exc_info=True)
+            logger.error(f"Error in sniffer process execution on interface {interface}: {e}", exc_info=True)
         finally:
-            if sniffer and hasattr(sniffer, 'stop') and callable(sniffer.stop):
+            if sniffer_instance and hasattr(sniffer_instance, 'stop') and callable(sniffer_instance.stop):
                 try:
-                    sniffer.stop()
-                    logger.info("AsyncSniffer stopped in dedicated process on %s", interface)
-                except Exception as e: # pylint: disable=broad-except
-                    logger.error(f"Error stopping AsyncSniffer in dedicated process: {e}", exc_info=True)
-            logger.info("Sniffer process on interface %s stopped.", interface)
+                    logger.info("Attempting to stop AsyncSniffer...")
+                    sniffer_instance.stop()
+                    if hasattr(sniffer_instance, 'join') and callable(sniffer_instance.join):
+                        sniffer_instance.join(timeout=2)
+                    logger.info(f"AsyncSniffer stopped on {interface}.")
+                except Exception as e_stop:
+                    logger.error(f"Error stopping AsyncSniffer: {e_stop}", exc_info=True)
+            logger.info(f"Sniffer process for interface {interface} with PID {os.getpid()} is exiting.")
 
     def __getstate__(self):
-        # 1) Copy everything
-        state = self.__dict__.copy()
-
-        # 2) Strip known un-picklables by name
-        for bad in (
-            "manager",
-            "worker_process",
-            "sniffer_process",
-            "reporter_process",
-            "signature_engine",
-            "firewall",
-            "ids_signature_engine",
-            "ips_engine",
-            "blocker",
-            "monitor",
-            "_dns_counter",
-            "_endpoint_tracker",
-            "recent_packets",
-        ):
-            state.pop(bad, None)
-
-        # 3) Strip any leftover Process objects by type
-        for k, v in list(state.items()):
-            if isinstance(v, mp.process.BaseProcess):
-                state.pop(k)
-
-        # 4) If already scanned, short‑circuit
-        if self._state_checked:
-            return state
-
-        # 5) One‑time pickle test for anything else
-        for k, v in list(state.items()):
-            try:
-                pickle.dumps(v)
-            except Exception as e:
-                print(f"❌ Cannot pickle attribute: {k} ({type(v)}) – {e}")
-                state.pop(k)
-
-        # 6) Mark done so we don’t repeat
-        self._state_checked = True
+        logger.debug("PacketSniffer.__getstate__ called")
+        state = {
+            'models': self.models,
+            'feature_extractor': self.feature_extractor,
+            'packet_processor': self.packet_processor,
+            'threat_detector': self.threat_detector,
+            'phishing_blocker': self.phishing_blocker,
+            'packet_counter': self.packet_counter, # mp.Value should be pickleable
+            'data_lock': self.data_lock, # mp.Lock should be pickleable
+            'stop_sniffing_event': self.stop_sniffing_event # mp.Event should be pickleable
+            # Attributes like sio_queue, manager, worker_process, sniffer_process, reporter_process
+            # are intentionally omitted as they are either process-specific or not needed/problematic for pickling.
+            # Basic Python types like lists, dicts, primitives in self.history, self.stats (if manager.dict items are converted)
+            # might be selectively included if needed by the child's _packet_handler *before* re-initialization.
+            # However, it's safer to rely on re-initialization or passing via args for complex objects.
+        }
+        # Minimal check, actual test happens during multiprocessing
+        # try:
+        #     pickle.dumps(state) # This is a very basic check, multiprocessing uses its own pickler
+        # except Exception as e:
+        #     logger.error(f"Error pickling state in __getstate__: {e}", exc_info=True)
+        #     # Potentially return an even more stripped-down state or raise an error
+        #     # if critical components (like self.models) cannot be pickled.
+        #     # For now, we assume the listed components are generally pickleable or handled by mp.
+        #     raise TypeError(f"Cannot pickle essential sniffer state: {e}")
         return state
     
     def __setstate__(self, state):
-        # 1) Restore attributes
+        logger.debug("PacketSniffer.__setstate__ called")
         self.__dict__.update(state)
+        # self.sio_queue is set by _run_sniffer_process via arguments.
+        # self.manager, self.worker_process, self.reporter_process, self.sniffer_process are not part of 'state'
+        # and are managed by the main process part of PacketSniffer lifecycle (start/stop methods).
         
-        # 2) Reinitialize non-pickleable attributes
-        from collections import defaultdict
-        self.recent_packets = defaultdict(default_recent_packet)
-        self._endpoint_tracker = defaultdict(lambda: defaultdict(set))
-        self._dns_counter = {}
-        self._protocol_counter = {}
+        # Re-initialize any non-pickleable or process-specific resources if they weren't
+        # handled by being passed into _run_sniffer_process target args.
+        # For example, if a component held a direct SIO instance (which it shouldn't for pickling):
+        # if hasattr(self, 'threat_detector') and self.threat_detector is not None:
+        #    self.threat_detector.sio_queue = None # Will be re-set in _run_sniffer_process
+
+        # Re-initialize complex objects that might not pickle well or need process-specific setup
+        # For instance, if self.stats was a complex object not using Manager().dict()
+        # and was part of the pickled state, it might need re-initialization here.
+        # However, self.stats uses self.manager.dict(), which is designed for multiprocessing.
+        # self.recent_packets = defaultdict(default_recent_packet) # If not pickled or needs fresh start
+        # self._endpoint_tracker = defaultdict(lambda: defaultdict(set)) # If not pickled
+        # self._dns_counter = self.manager.dict() # If it were a regular dict and part of state
+        # self._protocol_counter = self.manager.dict() # If it were a regular dict
+
+        logger.info("PacketSniffer state restored in child process.")
 
 
     def _init_ip_databases(self):
@@ -915,9 +961,52 @@ class PacketSniffer:
             #                 logger.warning("sio_queue is full. Dropping event: ml_alert")
             # except Exception as e:
             #     logger.debug("ML prediction failed: %s", e)
+
+            # Construct and emit frontend_packet_data
+            frontend_packet_data = {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "source_ip": src_ip if src_ip else "N/A",
+                "destination_ip": dst_ip if dst_ip else "N/A",
+                "protocol": packet_info.get("protocol", "Unknown").upper(),
+                "bytes_transferred": packet_info.get("size", 0),
+                "host": dst_ip if dst_ip else "N/A",
+                "path": "/",
+                "method": "N/A",
+                "user_agent": "N/A",
+                "suspicious_headers": False,
+                "risk_score": 0,
+                "blocked": False
+            }
+
+            if frontend_packet_data["protocol"] == "HTTP" or frontend_packet_data["protocol"] == "HTTPS":
+                if packet.haslayer(HTTPRequest):
+                    http_req = packet[HTTPRequest]
+                    frontend_packet_data["method"] = http_req.Method.decode(errors="replace") if hasattr(http_req, "Method") else "N/A"
+                    frontend_packet_data["host"] = http_req.Host.decode(errors="replace") if hasattr(http_req, "Host") else frontend_packet_data["host"]
+                    frontend_packet_data["path"] = http_req.Path.decode(errors="replace") if hasattr(http_req, "Path") else "/"
+                    frontend_packet_data["user_agent"] = http_req.User_Agent.decode(errors="replace") if hasattr(http_req, "User_Agent") else "N/A"
+                elif packet.haslayer(HTTPResponse):
+                    frontend_packet_data["method"] = "RESPONSE"
+
+            threats_found = self.threat_detector.detect_threats(packet)
+            if threats_found:
+                frontend_packet_data["risk_score"] = max(frontend_packet_data["risk_score"], 50)
+
+            # Example for self.firewall.is_blocked - assuming such a method exists
+            # if hasattr(self, 'firewall') and hasattr(self.firewall, 'is_blocked') and callable(self.firewall.is_blocked):
+            #     if src_ip and self.firewall.is_blocked(src_ip):
+            #         frontend_packet_data["blocked"] = True
+
+            try:
+                self.sio_queue.put_nowait(("new_packet_data", frontend_packet_data))
+            except Full:
+                logger.warning("sio_queue is full. Dropping event: new_packet_data")
+            except Exception as e_emit:
+                logger.error(f"Error putting new_packet_data into sio_queue: {e_emit}")
+
         except Exception as e:
             logger.error("Packet processing error: %s [Summary: %s]",
-                        str(e), packet.summary()[:100])
+                        str(e), packet.summary()[:100], exc_info=True) # Added exc_info=True
             try:
                 self.sio_queue.put_nowait(("system_error", {
                     "component": "packet_handler",
@@ -928,8 +1017,9 @@ class PacketSniffer:
                 logger.warning("sio_queue is full. Dropping event: system_error (packet_handler)")
         finally:
             self.current_packet_source = None
-            logger.debug("Packet processing completed in %.4f seconds",
-                        time.perf_counter() - self.start_time)
+            # Assuming self.start_time is set at the beginning of _packet_handler
+            if hasattr(self, 'start_time'):
+                 logger.debug("Packet processing completed in %.4f seconds", time.perf_counter() - self.start_time)
 
     def _create_packet_info(self, packet, src_ip, dst_ip, ip_version, is_arp):
         """DRY method for creating packet info structure"""
@@ -1483,26 +1573,33 @@ class PacketSniffer:
                 # except Exception as e:
                 #     logger.warning(f"Failed to process and save data: {e}")
                 
-                # --- Refine http_activity payload (Task 5) ---
+                # --- Refine http_activity payload (Aligned with frontend HttpActivity interface) ---
+                sec_headers_analysis = http_data.get("header_analysis", {})
+                security_headers_status = sec_headers_analysis.get("security_headers", {})
+                missing_security_headers_list = [header_key for header_key, is_missing in security_headers_status.items() if is_missing]
+
+                content_analysis_results = http_data.get("content_analysis", {})
+                injection_patterns_dict = content_analysis_results.get("injection_patterns", {})
+                injection_detected_bool = any(injection_patterns_dict.values())
+
+                behavioral_indicators_results = http_data.get("behavioral_indicators", {})
+                beaconing_detected_bool = behavioral_indicators_results.get("beaconing", False)
+
                 frontend_http_payload = {
                     "id": f"http_{datetime.utcnow().timestamp()}_{http_data.get('source_ip', 'unknownip')}_{http_data.get('destination_ip', 'unknownip')}",
-                    "timestamp": http_data.get("timestamp", datetime.utcnow().isoformat()),
-                    "source_ip": http_data.get("source_ip"),
-                    "source_port": http_data.get("network_metrics", {}).get("source_port"),
-                    "destination_ip": http_data.get("destination_ip"),
-                    "destination_port": http_data.get("network_metrics", {}).get("destination_port"),
+                    "timestamp": http_data.get("timestamp", datetime.utcnow().isoformat() + "Z"), # Ensure Z
+                    "sourceIp": http_data.get("source_ip"),
+                    "destinationIp": http_data.get("destination_ip"),
                     "method": http_data.get("method"),
-                    "host": http_data.get("host"),
                     "path": http_data.get("path"),
-                    "status_code": http_data.get("status_code"),
-                    "user_agent": http_data.get("user_agent"),
-                    "content_type": http_data.get("content_type"),
-                    "protocol": http_data.get("version"), # HTTP version (e.g., "HTTP/1.1")
-                    "payload_size": len(payload), # Size of the extracted payload from _extract_http_payload
-                    "threat_score": http_data.get("threat_analysis", {}).get("threat_score"),
-                    "risk_level": http_data.get("threat_analysis", {}).get("risk_level"),
-                    "contributing_indicators": http_data.get("threat_analysis", {}).get("contributing_indicators", [])
-                    # response_time_ms is complex to capture accurately at sniffer level and is omitted.
+                    "statusCode": http_data.get("status_code"),
+                    "userAgent": http_data.get("user_agent"),
+                    "referrer": self._safe_extract(http_layer, "Referer"),
+                    "contentType": http_data.get("content_type"),
+                    "missingSecurityHeaders": missing_security_headers_list,
+                    "injectionDetected": injection_detected_bool,
+                    "beaconingIndicators": beaconing_detected_bool,
+                    "threatScore": int(http_data.get("threat_analysis", {}).get("threat_score", 0))
                 }
                 # save_http_data_to_json(frontend_http_payload) # Optionally save the emitted payload for debugging
 
@@ -2586,7 +2683,45 @@ class PacketSniffer:
                     dns_payload["ttl_anomaly"] = bool(avg_ttl < 30) 
             
             self.sio_queue.put_nowait(("dns_activity", dns_payload))
-            # --- End Refine dns_activity payload ---
+            # --- Refine dns_activity payload (Task 5) ---
+            # Adjusted to align with frontend DnsActivity interface (emit one event per query)
+            dns_qtype_map = {1: "A", 2: "NS", 5: "CNAME", 6: "SOA", 12: "PTR", 15: "MX", 16: "TXT", 28: "AAAA", 255: "ANY"}
+            def get_dns_qtype_name(qtype_val):
+                return dns_qtype_map.get(qtype_val, str(qtype_val))
+
+            for query_item in queries: # queries is a list of dicts
+                query_name = query_item.get("name")
+                if not query_name:
+                    continue
+
+                # Find corresponding response (simplistic: first match by name)
+                relevant_response = next((r for r in responses if r.get("name") == query_name), None)
+
+                # Calculate DGA for this specific query.
+                # Assuming _calculate_dga_score can take a list containing a single query dict.
+                dga_score_for_query = self._calculate_dga_score([query_item])
+                possible_dga_bool = dga_score_for_query > 0.7 # Example threshold
+
+                # Placeholder for matchedThreatIntel
+                matched_threat_intel_bool = False
+                # Example: if self.threat_intel_service.is_malicious(query_name): matched_threat_intel_bool = True
+
+                dns_event_payload = {
+                    "id": f"dns_{datetime.utcnow().timestamp()}_{ip.src}_{query_name.replace('.', '_')}", # Make ID more file-system friendly if used as such
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "domain": query_name,
+                    "recordType": get_dns_qtype_name(query_item.get("type")),
+                    "queryResult": relevant_response.get("data") if relevant_response else None,
+                    "ttl": relevant_response.get("ttl") if relevant_response else 0,
+                    "possibleDGA": possible_dga_bool,
+                    "matchedThreatIntel": matched_threat_intel_bool,
+                    "clientIp": ip.src,
+                }
+                try:
+                    self.sio_queue.put_nowait(("dns_activity", dns_event_payload))
+                except Full:
+                    logger.warning(f"sio_queue is full. Dropping event: dns_activity for {query_name}")
+            # --- End Refine dns_activity payload (aligned with frontend DnsActivity) ---
 
         except Exception as e:
             logger.error(f"DNS analysis failed: {str(e)}", exc_info=True)
@@ -2904,130 +3039,186 @@ class PacketSniffer:
     #         )
     #     )
 
-    async def start(self, interface: str = None):
-        """Start the packet sniffer in a separate process and other auxiliary processes."""
-        interface = interface or conf.iface
-        if not interface:
-            logger.error("No network interface specified for sniffing.")
-            raise RuntimeError("No interface specified for packet sniffing.")
+async def start(self, interface: str = None):
+    current_sniffing_interface = "unknown"
+    if self.sniffer_process and self.sniffer_process.is_alive():
+        if hasattr(self.sniffer_process, '_args') and self.sniffer_process._args and len(self.sniffer_process._args) > 0:
+            current_sniffing_interface = self.sniffer_process._args[0]
+        logger.info(f"Sniffer process is running on {current_sniffing_interface}. Stopping it before restarting.")
+        self.stop()
+        await asyncio.sleep(0.1)
 
-        if self.sniffer_process and self.sniffer_process.is_alive():
-            logger.warning("Sniffer process is already running on interface %s.", interface)
-            return
+    selected_interface = interface
+    if not selected_interface:
+        logger.info("No interface provided, attempting to find a default using psutil.")
+        try:
+            if_addrs = psutil.net_if_addrs()
+            if_stats = psutil.net_if_stats()
+            for iface_name, addrs in if_addrs.items():
+                if iface_name == 'lo' or (if_stats.get(iface_name) and not if_stats[iface_name].isup):
+                    continue
+                has_ip = any(addr.family == socket.AF_INET or addr.family == socket.AF_INET6 for addr in addrs)
+                if has_ip:
+                    selected_interface = iface_name
+                    logger.info(f"Using psutil-derived default interface: {selected_interface}")
+                    break
+            if not selected_interface:
+                logger.warning("Could not determine a default interface using psutil. Sniffing may fail.")
+        except Exception as e:
+            logger.error(f"Error determining default interface with psutil: {e}. Sniffing may fail if no interface is ultimately selected.")
+            selected_interface = None # Ensure it's None if psutil fails
 
-        # 1) Start queue-processor (if not already running)
-        if not self.worker_process or not self.worker_process.is_alive():
-            self.worker_process = Process(target=self._process_queue, daemon=True)
+    if not selected_interface:
+        logger.error("No network interface specified or a default could not be determined using psutil.")
+        try:
+            self.sio_queue.put_nowait(("system_status", {
+                "component": "packet_sniffer",
+                "status": "error",
+                "message": "No interface to sniff on",
+                "timestamp": datetime.utcnow().isoformat(),
+            }))
+        except Full:
+            logger.warning("sio_queue is full. Dropping event: system_status (error - no interface)")
+        return
+
+    logger.info(f"Attempting to start sniffer on interface: {selected_interface}")
+
+    if not self.worker_process or not self.worker_process.is_alive():
+        self.worker_process = Process(target=self._process_queue, daemon=True)
+        try:
             self.worker_process.start()
-            logger.info("Queue processing worker started.")
+            logger.info(f"Queue processing worker started with PID {self.worker_process.pid}.")
+        except Exception as e_start_worker:
+            logger.error(f"Failed to start worker_process: {e_start_worker}", exc_info=True)
+            self.worker_process = None
+    else:
+        logger.info("Queue processing worker already running.")
 
-        # 2) Start the new sniffer process for AsyncSniffer
-        self.stop_sniffing_event.clear()
-        self.sniffer_process = Process(
-            target=self._run_sniffer_process,
-            args=(interface, self.sio_queue), # Pass the queue
-            daemon=True
-        )
+    self.stop_sniffing_event.clear()
+    self.sniffer_process = Process(
+        target=self._run_sniffer_process,
+        args=(selected_interface, self.sio_queue),
+        daemon=True
+    )
+    try:
         self.sniffer_process.start()
-        logger.info("Packet sniffer process started on interface %s.", interface)
-        
-        # The original `await self._stop_event.wait()` was likely for keeping the main thread alive
-        # or for a different kind of sniffer lifecycle. In a multiprocessing setup,
-        # the main process continues, and the sniffer runs in the background.
-        # If `start` is expected to block, this needs reconsideration. Assuming it's not.
+        logger.info(f"Packet sniffer process started on interface {selected_interface} with PID {self.sniffer_process.pid}.")
+    except Exception as e_start_sniffer:
+        logger.error(f"Failed to start sniffer_process: {e_start_sniffer}", exc_info=True)
+        self.sniffer_process = None
 
-        # 3) Start reporter (if not already running)
-        if not self.reporter_process or not self.reporter_process.is_alive():
-            self.reporter_process = Process(
+
+    if not self.reporter_process or not self.reporter_process.is_alive():
+        self._reporter_stop.clear()
+        self.reporter_process = Process(
             target=_reporter_loop,
-            args=(self.sio_queue, self.stats, self._reporter_stop,5.0),
+            args=(self.sio_queue, self.stats, self._reporter_stop, 5.0),
             daemon=True,
         )
-            self.reporter_process.start()
-
-        # 4) send system status
         try:
-            self.sio_queue.put_nowait((
-                "system_status",
-                {
-                    "component": "packet_sniffer",
-                    "status": "running",
-                    "interface": interface,
-                    "timestamp": datetime.utcnow().isoformat(),
-                }
-            ))
-        except Full:
-            logger.warning("sio_queue is full. Dropping event: system_status (running)")
+            self.reporter_process.start()
+            logger.info(f"Reporter process started with PID {self.reporter_process.pid}.")
+        except Exception as e_start_reporter:
+            logger.error(f"Failed to start reporter_process: {e_start_reporter}", exc_info=True)
+            self.reporter_process = None
+    else:
+        logger.info("Reporter process already running.")
+
+    try:
+        self.sio_queue.put_nowait((
+            "system_status",
+            {
+                "component": "packet_sniffer",
+                "status": "running",
+                "interface": selected_interface,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        ))
+    except Full:
+        logger.warning("sio_queue is full. Dropping event: system_status (running)")
             # Depending on importance, you might want to retry or handle this differently
 
     def stop(self):
-        """Stop packet capture and cleanup."""
         logger.info("Stopping packet sniffer and associated processes...")
 
-        # 1) Stop the new sniffer process
+        # Stop the main sniffer process (runs _run_sniffer_process)
         if self.sniffer_process and self.sniffer_process.is_alive():
             logger.info("Signaling sniffer process to stop...")
-            self.stop_sniffing_event.set()
-            self.sniffer_process.join(timeout=10) # Increased timeout for sniffer to stop gracefully
+            if hasattr(self, 'stop_sniffing_event'):
+                self.stop_sniffing_event.set()
+            self.sniffer_process.join(timeout=10)
             if self.sniffer_process.is_alive():
-                logger.warning("Sniffer process did not stop gracefully, terminating.")
+                logger.warning("Sniffer process did not stop gracefully after event, terminating.")
                 self.sniffer_process.terminate()
                 self.sniffer_process.join(timeout=5) # Wait for termination
             if not self.sniffer_process.is_alive():
-                 logger.info("Sniffer process stopped.")
+                logger.info("Sniffer process stopped.")
             else:
                 logger.error("Failed to stop sniffer process even after termination attempt.")
-            self.sniffer_process = None
         else:
             logger.info("Sniffer process was not running or already stopped.")
-            
-            # self.recorder.flush_remaining_on_exit() # If recorder is used
+        self.sniffer_process = None
 
-        # 2) Stop worker and reporter as before
+        # Stop worker process (event_queue processor for self._process_queue)
+        # self._process_queue uses self.stop_event
         if self.worker_process and self.worker_process.is_alive():
             logger.info("Stopping queue processing worker...")
-            self.worker_process.terminate() # Consider a more graceful shutdown if possible
+            if hasattr(self, 'stop_event'): # This is the event for _process_queue loop
+                self.stop_event.set()
             self.worker_process.join(timeout=5)
+            if self.worker_process.is_alive():
+                logger.warning("Queue processing worker did not stop gracefully after event, terminating.")
+                self.worker_process.terminate()
+                self.worker_process.join(timeout=5)
             if not self.worker_process.is_alive():
                 logger.info("Queue processing worker stopped.")
             else:
-                logger.warning("Queue processing worker did not stop gracefully.")
-            self.worker_process = None # Clear the process reference
+                logger.warning("Queue processing worker did not stop gracefully after termination.")
+        else:
+            logger.info("Queue processing worker was not running or already stopped.")
+        self.worker_process = None
 
+        # Stop reporter process
         if self.reporter_process and self.reporter_process.is_alive():
             logger.info("Stopping reporter process...")
-            self._reporter_stop.set()
-            self.reporter_process.join(timeout=5) # Reporter has an event, so join should be effective
+            if hasattr(self, '_reporter_stop'):
+                self._reporter_stop.set()
+            self.reporter_process.join(timeout=5)
             if self.reporter_process.is_alive():
-                logger.warning("Reporter process did not stop gracefully, terminating.")
+                logger.warning("Reporter process did not stop gracefully after event, terminating.")
                 self.reporter_process.terminate()
                 self.reporter_process.join(timeout=5)
             if not self.reporter_process.is_alive():
                 logger.info("Reporter process stopped.")
             else:
                 logger.warning("Reporter process did not stop gracefully after termination.")
-            self.reporter_process = None # Clear the process reference
+        else:
+            logger.info("Reporter process was not running or already stopped.")
+        self.reporter_process = None
 
         self.end_time = time.perf_counter()
         
-        # This event was for the old AsyncSniffer direct control, may not be needed or used the same way
-        if self._stop_event and not self._stop_event.is_set(): # Ensure it's set if other parts rely on it
-             self._stop_event.set()
+        if hasattr(self, 'packet_counter') and hasattr(self, 'start_time'):
+            logger.info(f"Processed {self.packet_counter.value} packets in {(self.end_time - self.start_time):.2f} seconds")
+        elif hasattr(self, 'packet_counter'):
+             logger.info(f"Packet sniffer stopped. Processed packets: {self.packet_counter.value}.")
+        else:
+             logger.info("Packet sniffer stopped. Packet counter not available.")
 
-        logger.info("Processed %d packets in %.2f seconds", self.packet_counter.value, (self.end_time - self.start_time))
-        
-        # Send stopping status
         try:
-            self.sio_queue.put_nowait((
-                "system_status",
-                {
-                    "component": "packet_sniffer",
-                    "status": "stopped",
-                    "timestamp": datetime.utcnow().isoformat(),
-                }
-            ))
+            if hasattr(self, 'sio_queue') and self.sio_queue is not None:
+                self.sio_queue.put_nowait((
+                    "system_status",
+                    {
+                        "component": "packet_sniffer",
+                        "status": "stopped",
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                ))
         except Full:
             logger.warning("sio_queue is full. Dropping event: system_status (stopped)")
+        except Exception as e:
+            logger.error(f"Error sending stopped status to sio_queue: {e}")
 
     def get_stats(self) -> Dict:
         """Get comprehensive statistics"""
