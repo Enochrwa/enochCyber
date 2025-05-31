@@ -265,38 +265,54 @@ class PacketSniffer:
         #        self.phishing_blocker.sio_queue = sio_queue
         #        logger.info("Updated phishing_blocker's sio_queue in child process.")
 
-        sniffer_instance = None
-        try:
-            logger.info(f"Initializing AsyncSniffer for interface {interface}")
-            sniffer_instance = AsyncSniffer(
-                iface=interface,
-                filter="not (dst net 127.0.0.1 or multicast)",
-                prn=self._packet_handler,
-                store=False,
-                promisc=True
-            )
-            sniffer_instance.start()
-            logger.info(f"AsyncSniffer started sniffing on {interface}")
+    sniffer_instance = None
+    try:
+        logger.info(f"Initializing AsyncSniffer for interface {interface}")
 
+        # Define the stop filter function within the scope where `self` (the unpickled PacketSniffer instance) is available
+        def check_stop_event(pkt): # pkt is unused but required by stop_filter
             if hasattr(self, 'stop_sniffing_event') and self.stop_sniffing_event:
-                self.stop_sniffing_event.wait()
-                logger.info("Stop event received by sniffer process.")
-            else:
-                logger.warning("stop_sniffing_event not found in sniffer process, will run indefinitely or until error.")
+                is_set = self.stop_sniffing_event.is_set()
+                # logger.debug(f"stop_filter check_stop_event: event is_set() -> {is_set}")
+                return is_set
+            logger.warning("stop_filter: stop_sniffing_event not found on self.")
+            return False
 
-        except Exception as e:
-            logger.error(f"Error in sniffer process execution on interface {interface}: {e}", exc_info=True)
-        finally:
-            if sniffer_instance and hasattr(sniffer_instance, 'stop') and callable(sniffer_instance.stop):
-                try:
-                    logger.info("Attempting to stop AsyncSniffer...")
-                    sniffer_instance.stop()
-                    if hasattr(sniffer_instance, 'join') and callable(sniffer_instance.join):
-                        sniffer_instance.join(timeout=2)
-                    logger.info(f"AsyncSniffer stopped on {interface}.")
-                except Exception as e_stop:
-                    logger.error(f"Error stopping AsyncSniffer: {e_stop}", exc_info=True)
-            logger.info(f"Sniffer process for interface {interface} with PID {os.getpid()} is exiting.")
+        sniffer_instance = AsyncSniffer(
+            iface=interface,
+            filter="not (dst net 127.0.0.1 or multicast)", # Standard filter
+            prn=self._packet_handler,
+            store=False,
+            promisc=True,
+            stop_filter=check_stop_event # Use the stop_filter
+        )
+        sniffer_instance.start()
+        logger.info(f"AsyncSniffer started sniffing on {interface} with stop_filter enabled.")
+
+        if hasattr(self, 'stop_sniffing_event') and self.stop_sniffing_event:
+            self.stop_sniffing_event.wait()
+            logger.info("Stop event (stop_sniffing_event) received by child sniffer process. AsyncSniffer should be stopping via stop_filter.")
+
+            if hasattr(sniffer_instance, 'join') and callable(sniffer_instance.join):
+                logger.info("Joining AsyncSniffer sniffing thread...")
+                sniffer_instance.join(timeout=5)
+                if sniffer_instance.isAlive():
+                    logger.warning("AsyncSniffer sniffing thread still alive after join (5s timeout).")
+                else:
+                    logger.info("AsyncSniffer sniffing thread successfully joined.")
+            else:
+                logger.warning("AsyncSniffer instance does not have a join method.")
+        else:
+            logger.error("CRITICAL: stop_sniffing_event not found in sniffer process. Sniffer may not stop correctly.")
+
+    except Exception as e:
+        logger.error(f"Error during sniffer process execution on interface {interface}: {e}", exc_info=True)
+    finally:
+        logger.info("Sniffer process's try block finished.")
+        if sniffer_instance and hasattr(sniffer_instance, 'isAlive') and sniffer_instance.isAlive():
+            logger.warning(f"AsyncSniffer thread still alive at the end of _run_sniffer_process for {interface}. This might indicate stop_filter did not work as expected or join timed out.")
+
+        logger.info(f"Sniffer process for interface {interface} with PID {os.getpid()} is exiting.")
 
     def __getstate__(self):
         logger.debug("PacketSniffer.__getstate__ called")
@@ -308,7 +324,8 @@ class PacketSniffer:
             'phishing_blocker': self.phishing_blocker,
             'packet_counter': self.packet_counter, # mp.Value should be pickleable
             'data_lock': self.data_lock, # mp.Lock should be pickleable
-            'stop_sniffing_event': self.stop_sniffing_event # mp.Event should be pickleable
+            'stop_sniffing_event': self.stop_sniffing_event, # mp.Event should be pickleable
+            'stop_event': self.stop_event # mp.Event for worker_process
             # Attributes like sio_queue, manager, worker_process, sniffer_process, reporter_process
             # are intentionally omitted as they are either process-specific or not needed/problematic for pickling.
             # Basic Python types like lists, dicts, primitives in self.history, self.stats (if manager.dict items are converted)
@@ -329,10 +346,15 @@ class PacketSniffer:
     def __setstate__(self, state):
         logger.debug("PacketSniffer.__setstate__ called")
         self.__dict__.update(state)
+
+        if hasattr(self, 'stop_event'):
+            logger.debug(f"Restored stop_event in __setstate__, type: {type(self.stop_event)}")
+        else:
+            logger.error("stop_event not found after __setstate__!")
         # self.sio_queue is set by _run_sniffer_process via arguments.
         # self.manager, self.worker_process, self.reporter_process, self.sniffer_process are not part of 'state'
         # and are managed by the main process part of PacketSniffer lifecycle (start/stop methods).
-        
+
         # Re-initialize any non-pickleable or process-specific resources if they weren't
         # handled by being passed into _run_sniffer_process target args.
         # For example, if a component held a direct SIO instance (which it shouldn't for pickling):
@@ -3048,28 +3070,97 @@ async def start(self, interface: str = None):
         self.stop()
         await asyncio.sleep(0.1)
 
-    selected_interface = interface
+    selected_interface = interface # Use provided interface if any
     if not selected_interface:
-        logger.info("No interface provided, attempting to find a default using psutil.")
+        logger.info("No interface provided. Attempting to find a suitable default network interface.")
         try:
-            if_addrs = psutil.net_if_addrs()
-            if_stats = psutil.net_if_stats()
-            for iface_name, addrs in if_addrs.items():
-                if iface_name == 'lo' or (if_stats.get(iface_name) and not if_stats[iface_name].isup):
+            all_interfaces_info = psutil.net_if_addrs()
+            all_interfaces_stats = psutil.net_if_stats()
+            system_interface_names = list(all_interfaces_info.keys())
+
+            candidate_interfaces = []
+
+            # Populate candidates with their properties
+            for name in system_interface_names:
+                stats = all_interfaces_stats.get(name)
+                addrs = all_interfaces_info.get(name, [])
+
+                if not (stats and stats.isup):
+                    # logger.debug(f"Interface {name} is down or no stats, skipping.")
                     continue
-                has_ip = any(addr.family == socket.AF_INET or addr.family == socket.AF_INET6 for addr in addrs)
-                if has_ip:
-                    selected_interface = iface_name
-                    logger.info(f"Using psutil-derived default interface: {selected_interface}")
-                    break
-            if not selected_interface:
-                logger.warning("Could not determine a default interface using psutil. Sniffing may fail.")
+
+                is_loopback = name.lower() in ['lo', 'loopback'] or 'loopback' in name.lower()
+
+                ip_info = {'ipv4': None, 'ipv6': None}
+                has_any_ip = False
+                for addr in addrs:
+                    if addr.family == socket.AF_INET:
+                        ip_info['ipv4'] = addr.address
+                        has_any_ip = True
+                    elif addr.family == socket.AF_INET6:
+                        if not addr.address.lower().startswith('fe80:'):
+                            ip_info['ipv6'] = addr.address
+                            has_any_ip = True
+
+                if not has_any_ip:
+                    # logger.debug(f"Interface {name} has no suitable IP, skipping.")
+                    continue
+
+                candidate_interfaces.append({
+                    'name': name,
+                    'is_loopback': is_loopback,
+                    'speed': stats.speed if hasattr(stats, 'speed') else 0,
+                    'ip_info': ip_info
+                })
+
+            if not candidate_interfaces:
+                logger.warning("No suitable (up and IP-configured) interfaces found via psutil.")
+                selected_interface = None
+            else:
+                # Sort candidates: non-loopback first, then by speed (higher preferred), then by name
+                candidate_interfaces.sort(key=lambda x: (x['is_loopback'], -x['speed'], x['name']))
+
+                preferred_names_keywords = {
+                    "wi-fi": ["wi-fi", "wifi", "wlan"],
+                    "ethernet": ["ethernet", "eth", "enp", "eno", "enx"] # Added enx for some Linux systems
+                }
+
+                # Attempt to find a preferred Wi-Fi interface
+                for iface_details in candidate_interfaces:
+                    if iface_details['is_loopback']: continue
+                    if any(keyword in iface_details['name'].lower() for keyword in preferred_names_keywords["wi-fi"]):
+                        selected_interface = iface_details['name']
+                        logger.info(f"Selected preferred Wi-Fi interface: {selected_interface} (Speed: {iface_details['speed']} Mbps, IP: {iface_details['ip_info']})")
+                        break
+
+                # If no Wi-Fi, try preferred Ethernet
+                if not selected_interface:
+                    for iface_details in candidate_interfaces:
+                        if iface_details['is_loopback']: continue
+                        if any(keyword in iface_details['name'].lower() for keyword in preferred_names_keywords["ethernet"]):
+                            selected_interface = iface_details['name']
+                            logger.info(f"Selected preferred Ethernet interface: {selected_interface} (Speed: {iface_details['speed']} Mbps, IP: {iface_details['ip_info']})")
+                            break
+
+                # If still no selection, pick the best general candidate (first non-loopback from sorted list)
+                if not selected_interface:
+                    best_candidate = next((iface for iface in candidate_interfaces if not iface['is_loopback']), None)
+                    if best_candidate:
+                        selected_interface = best_candidate['name']
+                        logger.info(f"Selected best available general interface: {selected_interface} (Speed: {best_candidate['speed']} Mbps, IP: {best_candidate['ip_info']})")
+                    elif candidate_interfaces:
+                        selected_interface = candidate_interfaces[0]['name']
+                        logger.info(f"Selected loopback interface as only option: {selected_interface}")
+                    else:
+                        selected_interface = None
+                        logger.warning("Could not select a default interface after filtering.")
+
         except Exception as e:
-            logger.error(f"Error determining default interface with psutil: {e}. Sniffing may fail if no interface is ultimately selected.")
-            selected_interface = None # Ensure it's None if psutil fails
+            logger.error(f"Error determining default interface with psutil: {e}", exc_info=True)
+            selected_interface = None
 
     if not selected_interface:
-        logger.error("No network interface specified or a default could not be determined using psutil.")
+        logger.error("No network interface specified and could not determine a suitable default using psutil (checked Wi-Fi, Ethernet, and others).")
         try:
             self.sio_queue.put_nowait(("system_status", {
                 "component": "packet_sniffer",
