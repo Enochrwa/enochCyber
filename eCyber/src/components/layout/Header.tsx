@@ -37,6 +37,24 @@ const Header = () => {
 
     const { socket } = usePacketSnifferSocket();
 
+  // Fetch initial notifications
+  useEffect(() => {
+    axios.get('http://127.0.0.1:8000/api/notifications')
+      .then(response => {
+        // Assuming the API returns an array of notifications
+        // And that they match the NotificationType structure
+        // If not, transformation might be needed here
+        const fetchedNotifications: NotificationType[] = response.data.map((n: any) => ({
+          ...n,
+          read: false, // Or determine read status from API if available
+        }));
+        setNotifications(fetchedNotifications.slice(0, MAX_NOTIFICATIONS));
+      })
+      .catch(error => {
+        console.error('Error fetching initial notifications:', error);
+        // Optionally, set some error state or show a user-friendly message
+      });
+  }, []); // Empty dependency array means this runs once on mount
 
   // Set up Socket.IO client
   useEffect(() => {
