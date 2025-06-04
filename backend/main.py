@@ -276,7 +276,7 @@ async def create_app() -> FastAPI:
     app.include_router(threat_router.router, prefix="/api/threats", tags=["Threats"])
     app.include_router(system_router.router, prefix="/api/system", tags=["System"])
     app.include_router(admin_router.router, prefix="/api/admin", tags=["Admin"])
-    app.include_router(api_v1_router, tags=["APIv1"])
+    app.include_router(api_v1_router, prefix="/api/v1", tags=["APIv1"])
     app.include_router(ml_models_router.router, prefix="/api/v1/models", tags=["models"]) # Added for ML models
     # app.include_router(ids_router.router, prefix="/api/ids", tags=["IDS"])
     app.include_router(firewall_router, prefix="/firewall")

@@ -7,9 +7,54 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 // This would normally import a charting library like Recharts
 // We'll simulate the visualization with tailwind styling
 
-const ThreatVisualization = () => {
+// Define EmergingThreat type for props, compatible with data from Threats.tsx
+// This could be imported from Threats.tsx if exported, or from a shared types file.
+export interface EmergingThreat { // Renamed from EmergingThreatDisplay for local context if preferred
+  keyId: string;
+  name: string;
+  severity: "critical" | "high" | "medium" | "low" | "warning" | "unknown";
+  type: string;
+  details: string;
+  affectedSystems?: string[];
+  timestamp?: Date;
+  detectionCount?: number;
+  backendType: string;
+  backendSource: string;
+  id?: string;
+  summary?: string;
+  indicator?: string;
+  indicator_type?: string;
+  source: string;
+  published?: string;
+  last_seen?: string;
+}
+
+interface TimelineDataPoint {
+  date: string; // Example: "2023-11-01"
+  count: number;
+}
+
+interface TypeDataPoint {
+  name: string; // Example: "CVE"
+  value: number;
+}
+
+
+interface ThreatVisualizationProps {
+  threats: EmergingThreat[]; // Using the locally defined EmergingThreat type
+  timelineData: TimelineDataPoint[]; // Mock data structure
+  typesData: TypeDataPoint[];     // Mock data structure
+}
+
+const ThreatVisualization: React.FC<ThreatVisualizationProps> = ({ threats, timelineData, typesData }) => {
   const [activeTab, setActiveTab] = useState('global');
   
+  // For now, the component will not use the passed props to render dynamic charts.
+  // Static placeholders will remain.
+  // console.log("ThreatVisualization received threats:", threats);
+  // console.log("ThreatVisualization received timelineData:", timelineData);
+  // console.log("ThreatVisualization received typesData:", typesData);
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">

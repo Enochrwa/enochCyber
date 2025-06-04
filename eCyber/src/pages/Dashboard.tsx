@@ -37,10 +37,38 @@ import AnomalyInsightsSection from '@/components/dashboard/AnomalyInsightsSectio
 
 // Mock data for activity stream - REMOVED
 
-// Simulated emerging threat data - To be replaced
-const emergingThreatsMock = [ // Renamed to avoid conflict later
-  {
-    id: "threat1", // Changed to string for consistency if used as key
+// import { EmergingThreatDisplay } from './Threats'; // Assuming Threats.tsx exports this type
+// Or define locally if not exported / for clarity in Dashboard context
+interface DashboardEmergingThreat {
+  id: string;
+  name: string;
+  severity: "critical" | "warning" | "info" | "unknown"; // Matched to emergingThreats mapping below
+  type: string;
+  details: string;
+  affectedSystems: string[];
+  timestamp: Date;
+  detectionCount?: number; // Made optional as it's not directly from API
+}
+
+// Backend EmergingThreat structure (for reference during mapping)
+interface BackendEmergingThreat {
+  type: string;
+  id?: string;
+  summary?: string;
+  indicator?: string;
+  indicator_type?: string;
+  threat_type?: string;
+  source: string;
+  published?: string;
+  last_seen?: string;
+}
+
+
+// Simulated emerging threat data - To be replaced by API call below
+// const emergingThreatsMock = [ ... ]; // Removed
+
+// Map routes to tab values
+const routeToTabMap = {
     name: "DragonFly APT",
     severity: "critical" as const,
     type: "Advanced Persistent Threat",
@@ -117,6 +145,69 @@ const Dashboard = () => {
   const [lastAnomalyToastTime, setLastAnomalyToastTime] = useState(0); // To prevent toast spam
   const [networkStats, setNetworkStats] = useState<any>(null); // Define a proper type later
   const [isLoadingNetworkStats, setIsLoadingNetworkStats] = useState(false);
+
+  // State for API-fetched emerging threats
+  const [apiEmergingThreats, setApiEmergingThreats] = useState<DashboardEmergingThreat[]>([]);
+  const [isLoadingApiEmergingThreats, setIsLoadingApiEmergingThreats] = useState<boolean>(true);
+  const [errorApiEmergingThreats, setErrorApiEmergingThreats] = useState<string | null>(null);
+
+  // State for API-fetched threat feeds
+  interface ApiFeedStatus {
+    id: string;
+    name: string;
+    status: string;
+    entries: number;
+    last_updated?: string | null;
+    is_subscribed: boolean;
+  }
+  const [threatFeedsApiData, setThreatFeedsApiData] = useState<ApiFeedStatus[]>([]);
+  const [isLoadingThreatFeeds, setIsLoadingThreatFeeds] = useState<boolean>(true);
+  const [errorThreatFeeds, setErrorThreatFeeds] = useState<string | null>(null);
+
+  // State for API-fetched user summary
+  interface UserSummaryData {
+    total_users: number;
+    admin_users: number;
+    standard_users: number;
+  }
+  const [userSummaryData, setUserSummaryData] = useState<UserSummaryData | null>(null);
+  const [isLoadingUserSummary, setIsLoadingUserSummary] = useState<boolean>(true);
+  const [errorUserSummary, setErrorUserSummary] = useState<string | null>(null);
+
+  // State for API-fetched ML accuracy
+  interface MlAccuracyData {
+    model_name: string;
+    accuracy: number;
+    last_trained: string; // ISO date string
+  }
+  const [mlAccuracyData, setMlAccuracyData] = useState<MlAccuracyData | null>(null);
+  const [isLoadingMlAccuracy, setIsLoadingMlAccuracy] = useState<boolean>(true);
+  const [errorMlAccuracy, setErrorMlAccuracy] = useState<string | null>(null);
+
+  // State for API-fetched users list
+  interface UserListData { // Based on UserInDB schema from backend
+    id: number;
+    username: string;
+    email: string;
+    full_name?: string | null;
+    is_active: boolean;
+    is_superuser: boolean;
+    created_at: string; // ISO date string
+    updated_at?: string | null; // ISO date string
+  }
+  const [usersListData, setUsersListData] = useState<UserListData[]>([]);
+  const [isLoadingUsersList, setIsLoadingUsersList] = useState<boolean>(true);
+  const [errorUsersList, setErrorUsersList] = useState<string | null>(null);
+
+  // State for API-fetched general settings
+  interface GeneralSettingsData {
+    notification_email: string;
+    update_frequency: string;
+    data_retention_days: number;
+  }
+  const [generalSettingsData, setGeneralSettingsData] = useState<GeneralSettingsData | null>(null);
+  const [isLoadingGeneralSettings, setIsLoadingGeneralSettings] = useState<boolean>(true);
+  const [errorGeneralSettings, setErrorGeneralSettings] = useState<string | null>(null);
   
   // Determine active tab based on current route
   const activeTab = routeToTabMap[location.pathname] || 'overview';
@@ -145,7 +236,154 @@ const Dashboard = () => {
         socket.off('daily_summary');
       };
     }
-  }, [offline]);
+  }, [offline, getSocket]); // Added getSocket to dependency array
+
+  // Fetch Emerging Threats from API
+  useEffect(() => {
+    const fetchDashboardEmergingThreats = async () => {
+      setIsLoadingApiEmergingThreats(true);
+      setErrorApiEmergingThreats(null);
+      try {
+        const response = await fetch('/api/v1/threat-intelligence/emerging-threats');
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data: BackendEmergingThreat[] = await response.json();
+
+        const processedData: DashboardEmergingThreat[] = data.slice(0, 3).map((threat, index) => { // Take top 3 for dashboard display
+          let severity: DashboardEmergingThreat["severity"] = "unknown";
+          let name = threat.id || threat.indicator || `Threat ${index + 1}`;
+          let details = threat.summary || threat.threat_type || 'No specific details.';
+
+          if (threat.type === 'CVE') {
+            severity = "critical"; // Example severity for CVEs
+          } else if (threat.type === 'OSINT Indicator') {
+            if (threat.threat_type?.toLowerCase().includes("malware")) severity = "warning";
+            else severity = "info";
+          }
+
+          return {
+            id: threat.id || threat.indicator || `dash-et-${index}`,
+            name: name,
+            severity: severity,
+            type: threat.type,
+            details: details,
+            affectedSystems: [], // Not available from this specific backend endpoint structure
+            timestamp: threat.published ? new Date(threat.published) : (threat.last_seen ? new Date(threat.last_seen) : new Date()),
+            // detectionCount: undefined, // Not available
+          };
+        });
+        setApiEmergingThreats(processedData);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
+        setErrorApiEmergingThreats(msg);
+        console.error("Failed to fetch dashboard emerging threats:", e);
+      } finally {
+        setIsLoadingApiEmergingThreats(false);
+      }
+    };
+    fetchDashboardEmergingThreats();
+
+    const fetchThreatFeeds = async () => {
+      setIsLoadingThreatFeeds(true);
+      setErrorThreatFeeds(null);
+      try {
+        const response = await fetch('/api/v1/threat-intelligence/feeds');
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data: ApiFeedStatus[] = await response.json();
+        setThreatFeedsApiData(data);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
+        setErrorThreatFeeds(msg);
+        console.error("Failed to fetch threat feeds:", e);
+      } finally {
+        setIsLoadingThreatFeeds(false);
+      }
+    };
+    fetchThreatFeeds();
+
+    const fetchUserSummary = async () => {
+      setIsLoadingUserSummary(true);
+      setErrorUserSummary(null);
+      try {
+        const response = await fetch('/api/v1/users/summary');
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data: UserSummaryData = await response.json();
+        setUserSummaryData(data);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
+        setErrorUserSummary(msg);
+        console.error("Failed to fetch user summary:", e);
+      } finally {
+        setIsLoadingUserSummary(false);
+      }
+    };
+    fetchUserSummary();
+
+    const fetchMlAccuracy = async () => {
+      setIsLoadingMlAccuracy(true);
+      setErrorMlAccuracy(null);
+      try {
+        const response = await fetch('/api/v1/ml-models/accuracy');
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data: MlAccuracyData = await response.json();
+        setMlAccuracyData(data);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
+        setErrorMlAccuracy(msg);
+        console.error("Failed to fetch ML accuracy:", e);
+      } finally {
+        setIsLoadingMlAccuracy(false);
+      }
+    };
+    fetchMlAccuracy();
+
+    const fetchUsersList = async () => {
+      setIsLoadingUsersList(true);
+      setErrorUsersList(null);
+      try {
+        const response = await fetch('/api/v1/users/'); // Assuming this is the correct endpoint from v1 router
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data: UserListData[] = await response.json();
+        setUsersListData(data);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
+        setErrorUsersList(msg);
+        console.error("Failed to fetch users list:", e);
+      } finally {
+        setIsLoadingUsersList(false);
+      }
+    };
+    fetchUsersList();
+
+    const fetchGeneralSettings = async () => {
+      setIsLoadingGeneralSettings(true);
+      setErrorGeneralSettings(null);
+      try {
+        const response = await fetch('/api/v1/settings/general');
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data: GeneralSettingsData = await response.json();
+        setGeneralSettingsData(data);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
+        setErrorGeneralSettings(msg);
+        console.error("Failed to fetch general settings:", e);
+      } finally {
+        setIsLoadingGeneralSettings(false);
+      }
+    };
+    fetchGeneralSettings();
+  }, []);
   
   // Handle tab change
   const handleTabChange = (value: string) => {
@@ -478,24 +716,8 @@ const Dashboard = () => {
     behaviorAnalysisEvents
   ]);
 
-  // Emerging Threats from Redux
-  const emergingThreats = React.useMemo(() => {
-    return [
-      ...(Array.isArray(threatDetections) ? threatDetections : []),
-      ...(Array.isArray(securityAlerts) ? securityAlerts : [])
-    ].filter(alert => alert.severity === 'Critical' || alert.severity === 'High')    
-      .slice(0, 3) // Take top 3 critical/high
-      .map(alert => ({
-        id: alert.id,
-        name: alert.threat_type || 'High Severity Alert',
-        severity: alert.severity.toLowerCase() as 'critical' | 'warning', // Map to allowed values
-        type: alert.threat_type || 'Unknown Threat Type',
-        details: alert.description,
-        affectedSystems: alert.metadata?.affectedSystems as string[] || ['Various'], // Example if metadata exists
-        timestamp: new Date(alert.timestamp),
-        detectionCount: alert.metadata?.detectionCount as number || 1, // Example if metadata exists
-      }));
-  }, [threatDetections, securityAlerts]);
+  // REMOVED: Emerging Threats derived from Redux, will now use apiEmergingThreats
+  // const emergingThreats = React.useMemo(() => { ... }, [threatDetections, securityAlerts]);
 
 
   function formatBytes(bytes) {
@@ -579,20 +801,29 @@ const Dashboard = () => {
                 />
                 
                 <MetricsCard 
-                  title="Active Users" // Mock data for now
-                  value="184"
-                  description="23 admins, 161 standard users"
+                  title="Active Users"
+                  value={isLoadingUserSummary ? "Loading..." : (userSummaryData ? String(userSummaryData.total_users) : "N/A")}
+                  description={
+                    isLoadingUserSummary ? "" :
+                    errorUserSummary ? `Error: ${errorUserSummary.substring(0,20)}...` :
+                    (userSummaryData ? `${userSummaryData.admin_users} admins, ${userSummaryData.standard_users} standard` : "No data")
+                  }
                   icon={<Users size={16} />}
-                  trend={{ direction: 'neutral', value: '0%', label: 'unchanged' }}
+                  // trend={{ direction: 'neutral', value: '0%', label: 'unchanged' }} // Trend data not available
+                  variant={errorUserSummary ? "destructive" : "info"}
                 />
                 
                 <MetricsCard 
-                  title="ML Accuracy" // Mock data for now, or from a different store source
-                  value="99.7%"
-                  description="Based on last 10,000 events"
+                  title="ML Accuracy"
+                  value={isLoadingMlAccuracy ? "Loading..." : (mlAccuracyData ? `${(mlAccuracyData.accuracy * 100).toFixed(1)}%` : "N/A")}
+                  description={
+                    isLoadingMlAccuracy ? `Fetching ${mlAccuracyData?.model_name || 'model'} data...` :
+                    errorMlAccuracy ? `Error: ${errorMlAccuracy.substring(0,20)}...` :
+                    (mlAccuracyData ? `${mlAccuracyData.model_name} (Trained: ${new Date(mlAccuracyData.last_trained).toLocaleDateString()})` : "No data")
+                  }
                   icon={<Database size={16} />}
-                  trend={{ direction: 'up', value: '0.2%', label: 'since last training' }}
-                  variant="success"
+                  // trend={{ direction: 'up', value: '0.2%', label: 'since last training' }} // Trend data not available
+                  variant={errorMlAccuracy ? "destructive" : (mlAccuracyData && mlAccuracyData.accuracy > 0.9 ? "success" : "info")}
                 />
               </div>
             )}
@@ -607,14 +838,17 @@ const Dashboard = () => {
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  {emergingThreats.length > 0 ? (
+                  {isLoadingApiEmergingThreats && <p className="text-sm text-muted-foreground">Loading threats...</p>}
+                  {errorApiEmergingThreats && <p className="text-sm text-red-500">Error: {errorApiEmergingThreats}</p>}
+                  {!isLoadingApiEmergingThreats && !errorApiEmergingThreats && apiEmergingThreats.length > 0 ? (
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      {emergingThreats.map((threat) => (
+                      {apiEmergingThreats.map((threat) => (
                         <div 
                           key={threat.id}
                           className={cn(
                             "glass-card p-4 border rounded-lg",
-                            threat.severity === 'critical' ? "border-red-500/20" : "border-amber-500/20"
+                            threat.severity === 'critical' ? "border-red-500/20" :
+                            (threat.severity === 'warning' ? "border-amber-500/20" : "border-sky-500/20")
                           )}
                         >
                           <div className="flex justify-between items-start mb-2">
@@ -623,25 +857,32 @@ const Dashboard = () => {
                               variant="outline"
                               className={cn(
                                 "text-xs",
-                                threat.severity === 'critical' ? "border-red-500 text-red-400" : "border-amber-500 text-amber-400"
+                                threat.severity === 'critical' ? "border-red-500 text-red-400" :
+                                (threat.severity === 'warning' ? "border-amber-500 text-amber-400" : "border-sky-500 text-sky-400")
                               )}
                             >
                               {threat.severity.toUpperCase()}
                             </Badge>
                           </div>
                           <p className="text-xs text-muted-foreground mb-2">{threat.type}</p>
-                          <p className="text-xs mb-3">{threat.details}</p>
-                          <div className="text-xs text-muted-foreground">
-                            <span>Affected: </span>
-                            {threat.affectedSystems.map((sys, i) => (
-                              <Badge key={i} variant="secondary" className="mr-1 text-[10px]">
-                                {sys}
-                              </Badge>
-                            ))}
-                          </div>
+                          <p className="text-xs mb-3 h-10 overflow-y-auto">{threat.details}</p>
+                          {/* Affected Systems might be empty as it's not in backend data */}
+                          {threat.affectedSystems && threat.affectedSystems.length > 0 && (
+                            <div className="text-xs text-muted-foreground">
+                              <span>Affected: </span>
+                              {threat.affectedSystems.map((sys, i) => (
+                                <Badge key={i} variant="secondary" className="mr-1 text-[10px]">
+                                  {sys}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+                           <div className="text-xs text-muted-foreground mt-1">
+                                Timestamp: {new Date(threat.timestamp).toLocaleDateString()} {new Date(threat.timestamp).toLocaleTimeString()}
+                           </div>
                           <div className="flex items-center justify-between mt-3 pt-2 border-t border-border/50">
                             <span className="text-xs text-muted-foreground">
-                              {threat.detectionCount} {threat.detectionCount === 1 ? 'detection' : 'detections'}
+                              {/* Detection count not available from this API */}
                             </span>
                             <Button variant="ghost" size="sm" className="h-6 text-xs">
                               Investigate <ArrowRight className="ml-1" size={12} />
@@ -651,7 +892,7 @@ const Dashboard = () => {
                       ))}
                     </div>
                   ) : (
-                    <p className="text-sm text-muted-foreground">No critical or high severity emerging threats detected recently.</p>
+                    !isLoadingApiEmergingThreats && !errorApiEmergingThreats && <p className="text-sm text-muted-foreground">No critical or high severity emerging threats reported by API.</p>
                   )}
                 </CardContent>
               </Card>
@@ -707,18 +948,27 @@ const Dashboard = () => {
                         <CardTitle className="text-base">Threat Feed Status</CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-2">
-                        <div className="flex justify-between items-center">
-                          <span>MITRE ATT&CK</span>
-                          <Badge variant="outline" className="bg-green-500/10 text-green-500">Active</Badge>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span>OSINT Feed</span>
-                          <Badge variant="outline" className="bg-green-500/10 text-green-500">Active</Badge>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span>Threat Intel</span>
-                          <Badge variant="outline" className="bg-amber-500/10 text-amber-500">Warning</Badge>
-                        </div>
+                        {isLoadingThreatFeeds && <p className="text-sm text-muted-foreground">Loading feed statuses...</p>}
+                        {errorThreatFeeds && <p className="text-sm text-red-500">Error: {errorThreatFeeds}</p>}
+                        {!isLoadingThreatFeeds && !errorThreatFeeds && threatFeedsApiData.length > 0 ? (
+                          threatFeedsApiData.map(feed => (
+                            <div key={feed.id} className="flex justify-between items-center">
+                              <span>{feed.name} ({feed.entries} entries)</span>
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  feed.status === 'active' && feed.is_subscribed ? "bg-green-500/10 text-green-500" :
+                                  !feed.is_subscribed ? "bg-gray-500/10 text-gray-500" :
+                                  "bg-amber-500/10 text-amber-500" // Error or pending
+                                )}
+                              >
+                                {feed.is_subscribed ? (feed.status === 'active' ? 'Active' : (feed.status === 'error' ? 'Error' : 'Pending')) : 'Unsubscribed'}
+                              </Badge>
+                            </div>
+                          ))
+                        ) : (
+                          !isLoadingThreatFeeds && !errorThreatFeeds && <p className="text-sm text-muted-foreground">No threat feed statuses available.</p>
+                        )}
                       </CardContent>
                     </Card>
                     <Card>
@@ -726,16 +976,25 @@ const Dashboard = () => {
                         <CardTitle className="text-base">Latest IOCs</CardTitle>
                       </CardHeader>
                       <CardContent>
-                        <div className="space-y-2 text-sm">
-                          <div className="p-2 bg-background rounded-md">
-                            <div className="font-mono text-xs">c4ff94a99411b0d967dd1c88cd253d7c</div>
-                            <div className="text-xs text-muted-foreground">Malware hash - DragonFly APT</div>
+                        {isLoadingApiEmergingThreats && <p className="text-sm text-muted-foreground">Loading IOCs...</p>}
+                        {!isLoadingApiEmergingThreats && apiEmergingThreats.length > 0 ? (
+                          <div className="space-y-2 text-sm">
+                            {apiEmergingThreats
+                              .filter(threat => threat.type === 'OSINT Indicator' && threat.id) // Assuming 'id' holds the indicator value for OSINT
+                              .slice(0, 2) // Take first 2 OSINT indicators
+                              .map(ioc => (
+                                <div key={ioc.id} className="p-2 bg-background rounded-md">
+                                  <div className="font-mono text-xs">{ioc.id}</div>
+                                  <div className="text-xs text-muted-foreground">{ioc.name} - {ioc.details}</div>
+                                </div>
+                            ))}
+                            {apiEmergingThreats.filter(threat => threat.type === 'OSINT Indicator' && threat.id).length === 0 && (
+                              <p className="text-xs text-muted-foreground">No OSINT indicators found in recent emerging threats.</p>
+                            )}
                           </div>
-                          <div className="p-2 bg-background rounded-md">
-                            <div className="font-mono text-xs">103.56.112.8</div>
-                            <div className="text-xs text-muted-foreground">C2 server - CosmicRaven</div>
-                          </div>
-                        </div>
+                        ) : (
+                          !isLoadingApiEmergingThreats && <p className="text-xs text-muted-foreground">No emerging threats data to derive IOCs from.</p>
+                        )}
                       </CardContent>
                     </Card>
                   </div>
@@ -863,22 +1122,29 @@ const Dashboard = () => {
                       </div>
                     </div>
                     <div className="divide-y divide-border">
-                      {[...Array(5)].map((_, i) => (
-                        <div key={i} className="p-4 text-sm">
-                          <div className="grid grid-cols-12 gap-4">
+                      {isLoadingUsersList && <div className="p-4 text-sm text-muted-foreground text-center">Loading users...</div>}
+                      {errorUsersList && <div className="p-4 text-sm text-red-500 text-center">Error: {errorUsersList}</div>}
+                      {!isLoadingUsersList && !errorUsersList && usersListData.length === 0 && (
+                        <div className="p-4 text-sm text-muted-foreground text-center">No users found.</div>
+                      )}
+                      {!isLoadingUsersList && !errorUsersList && usersListData.map((user) => (
+                        <div key={user.id} className="p-4 text-sm">
+                          <div className="grid grid-cols-12 gap-4 items-center">
                             <div className="col-span-3">
-                              <div className="font-medium">User {i+1}</div>
-                              <div className="text-xs text-muted-foreground">user{i+1}@example.com</div>
+                              <div className="font-medium">{user.full_name || user.username}</div>
+                              <div className="text-xs text-muted-foreground">{user.email}</div>
                             </div>
                             <div className="col-span-3">
-                              {i === 0 ? "Administrator" : "Standard User"}
+                              {user.is_superuser ? "Administrator" : "Standard User"}
                             </div>
                             <div className="col-span-3 text-muted-foreground">
-                              {new Date(Date.now() - i * 1000 * 60 * 60 * 24).toLocaleDateString()}
+                              {user.updated_at ? new Date(user.updated_at).toLocaleDateString() : (user.created_at ? new Date(user.created_at).toLocaleDateString() : 'N/A')}
                             </div>
                             <div className="col-span-3">
-                              <Badge variant="outline" className="bg-green-500/10 text-green-500">
-                                Active
+                              <Badge variant="outline" className={cn(
+                                user.is_active ? "bg-green-500/10 text-green-500" : "bg-gray-500/10 text-gray-500"
+                              )}>
+                                {user.is_active ? "Active" : "Inactive"}
                               </Badge>
                             </div>
                           </div>
@@ -898,20 +1164,28 @@ const Dashboard = () => {
                       <h3 className="text-base font-medium mb-2">Notifications</h3>
                       <Card>
                         <CardContent className="pt-6 space-y-4">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <div className="font-medium">Email Alerts</div>
-                              <div className="text-xs text-muted-foreground">Receive critical alerts via email</div>
-                            </div>
-                            <Button variant="outline" size="sm">Configure</Button>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <div className="font-medium">Mobile Notifications</div>
-                              <div className="text-xs text-muted-foreground">Push notifications to mobile devices</div>
-                            </div>
-                            <Button variant="outline" size="sm">Configure</Button>
-                          </div>
+                          {isLoadingGeneralSettings && <p className="text-sm text-muted-foreground">Loading notification settings...</p>}
+                          {errorGeneralSettings && <p className="text-sm text-red-500">Error: {errorGeneralSettings}</p>}
+                          {generalSettingsData && !isLoadingGeneralSettings && !errorGeneralSettings && (
+                            <>
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <div className="font-medium">Email Alerts</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    Critical alerts sent to: {generalSettingsData.notification_email}
+                                  </div>
+                                </div>
+                                <Button variant="outline" size="sm" disabled>Configure</Button>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <div className="font-medium">Mobile Notifications</div>
+                                  <div className="text-xs text-muted-foreground">Push notifications (config TBD)</div>
+                                </div>
+                                <Button variant="outline" size="sm" disabled>Configure</Button>
+                              </div>
+                            </>
+                          )}
                         </CardContent>
                       </Card>
                     </div>
@@ -919,20 +1193,30 @@ const Dashboard = () => {
                       <h3 className="text-base font-medium mb-2">System</h3>
                       <Card>
                         <CardContent className="pt-6 space-y-4">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <div className="font-medium">Update Frequency</div>
-                              <div className="text-xs text-muted-foreground">How often to check for updates</div>
-                            </div>
-                            <Button variant="outline" size="sm">Configure</Button>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <div className="font-medium">Data Retention</div>
-                              <div className="text-xs text-muted-foreground">Configure log retention policies</div>
-                            </div>
-                            <Button variant="outline" size="sm">Configure</Button>
-                          </div>
+                          {isLoadingGeneralSettings && <p className="text-sm text-muted-foreground">Loading system settings...</p>}
+                          {errorGeneralSettings && <p className="text-sm text-red-500">Error: {errorGeneralSettings}</p>}
+                          {generalSettingsData && !isLoadingGeneralSettings && !errorGeneralSettings && (
+                            <>
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <div className="font-medium">Update Frequency</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    Check for updates: {generalSettingsData.update_frequency}
+                                  </div>
+                                </div>
+                                <Button variant="outline" size="sm" disabled>Configure</Button>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <div className="font-medium">Data Retention</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    Logs retained for: {generalSettingsData.data_retention_days} days
+                                  </div>
+                                </div>
+                                <Button variant="outline" size="sm" disabled>Configure</Button>
+                              </div>
+                            </>
+                          )}
                         </CardContent>
                       </Card>
                     </div>
