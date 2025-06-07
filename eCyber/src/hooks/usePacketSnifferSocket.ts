@@ -646,7 +646,7 @@ export default function usePacketSniffer(): UseSocketReturn {
     
     userManuallyDisconnected.current = false; // Reset manual disconnect flag on new connect attempt
 
-    const newSocket = io('http://127.0.0.1:8000/packet_sniffer', {
+    const newSocket = io('https://ecyber-backend.onrender.com/packet_sniffer', {
       path: '/socket.io',
       transports: ['websocket'],
       reconnection: false, // Disable built-in reconnection
@@ -670,25 +670,25 @@ export default function usePacketSniffer(): UseSocketReturn {
       socketRef.current = newSocket; // Assign socketRef here after successful connect
     });
 
-    newSocket.on('connect_error', (err) => {
-      console.error('❌ Connection Error:', err.message);
-      setConnectionError(`Connection failed: ${err.message}`);
-      setIsConnected(false); // Ensure isConnected is false
-      socketRef.current = null; // Clear socketRef on connection error
-      initialized.current = false; // Allow re-initialization by useEffect or manual call
+    // newSocket.on('connect_error', (err) => {
+    //   console.error('❌ Connection Error:', err.message);
+    //   setConnectionError(`Connection failed: ${err.message}`);
+    //   setIsConnected(false); // Ensure isConnected is false
+    //   socketRef.current = null; // Clear socketRef on connection error
+    //   initialized.current = false; // Allow re-initialization by useEffect or manual call
 
-      if (!userManuallyDisconnected.current && retryAttempts < MAX_RETRY_ATTEMPTS) {
-        setRetryAttempts(prev => prev + 1);
-        const nextRetryIn = RETRY_INTERVAL_MS / 1000;
-        setConnectionError(`Connection failed. Attempting retry ${retryAttempts + 1}/${MAX_RETRY_ATTEMPTS} in ${nextRetryIn}s. Error: ${err.message}`);
-        console.log(`Retrying connection, attempt ${retryAttempts + 1}`);
-        if (retryTimerIdRef.current) clearTimeout(retryTimerIdRef.current); // Clear previous timer if any
-        retryTimerIdRef.current = setTimeout(() => connect(true), RETRY_INTERVAL_MS);
-      } else if (!userManuallyDisconnected.current) {
-        setConnectionError(`Connection failed after ${MAX_RETRY_ATTEMPTS} attempts. Please check the server or network. Error: ${err.message}`);
-        console.error(`Failed to connect after ${MAX_RETRY_ATTEMPTS} attempts.`);
-      }
-    });
+    //   if (!userManuallyDisconnected.current && retryAttempts < MAX_RETRY_ATTEMPTS) {
+    //     setRetryAttempts(prev => prev + 1);
+    //     const nextRetryIn = RETRY_INTERVAL_MS / 1000;
+    //     setConnectionError(`Connection failed. Attempting retry ${retryAttempts + 1}/${MAX_RETRY_ATTEMPTS} in ${nextRetryIn}s. Error: ${err.message}`);
+    //     console.log(`Retrying connection, attempt ${retryAttempts + 1}`);
+    //     if (retryTimerIdRef.current) clearTimeout(retryTimerIdRef.current); // Clear previous timer if any
+    //     retryTimerIdRef.current = setTimeout(() => connect(true), RETRY_INTERVAL_MS);
+    //   } else if (!userManuallyDisconnected.current) {
+    //     setConnectionError(`Connection failed after ${MAX_RETRY_ATTEMPTS} attempts. Please check the server or network. Error: ${err.message}`);
+    //     console.error(`Failed to connect after ${MAX_RETRY_ATTEMPTS} attempts.`);
+    //   }
+    // });
 
     newSocket.on('disconnect', (reason) => {
       setIsConnected(false);
@@ -721,7 +721,7 @@ export default function usePacketSniffer(): UseSocketReturn {
       newSocket.on(eventType, (data: any) => handleEvent({ type: eventType, data } as SocketEvent));
     });
     
-    console.log("Attempting to connect socket...");
+    // console.log("Attempting to connect socket...");
     newSocket.connect();
     // Do not set socketRef.current here immediately for new sockets, wait for 'connect' event
     // For retries where newSocket is the same as socketRef.current, it's fine.
@@ -747,7 +747,7 @@ export default function usePacketSniffer(): UseSocketReturn {
       // socketRef.current = null; // Done in 'disconnect' event handler
       // initialized.current = false; // Done in 'disconnect' event handler
       // setIsConnected(false); // Done in 'disconnect' event handler
-      console.log('🔌 Socket Disconnection initiated by user.');
+      // console.log('🔌 Socket Disconnection initiated by user.');
     }
   }, []);
 
@@ -783,7 +783,7 @@ export default function usePacketSniffer(): UseSocketReturn {
 
     // Cleanup on unmount
     return () => {
-      console.log("Cleaning up usePacketSniffer hook.");
+      // console.log("Cleaning up usePacketSniffer hook.");
       if (retryTimerIdRef.current) {
         clearTimeout(retryTimerIdRef.current);
       }

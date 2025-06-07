@@ -27,7 +27,7 @@ import AttackSimulations from "./pages/AttackSimulations";
 import MainLayout from "./components/layout/MainLayout";
 import NotFound from "./pages/NotFound";
 
-import LoginPage from "./pages/Login";
+
 import { ThreatCve } from "./pages/threats/ThreatCve";
 import { ThreatMitre } from "./pages/threats/ThreatMitre";
 import { ThreatIntel } from "./pages/threats/ThreatIntel";
@@ -35,10 +35,8 @@ import { ThreatOsint } from "./pages/threats/ThreatOsint";
 import Alerts from "./alert/Alerts";
 // import useSocket from "./hooks/useSocket"; // Assuming this is not the primary socket hook for app connectivity status
 import usePacketSniffer from "./hooks/usePacketSnifferSocket";
-import RegisterPage from "./pages/Register";
 import CyberLoader from "./utils/Loader"
 import AuthModal from "./pages/AuthModal";
-import LoadingSpinner from "./utils/LoadingSpinner";
 import { useSelector } from "react-redux"
 import { RootState } from "@/app/store"
 
@@ -74,7 +72,7 @@ const App = () => {
       
         socket.on("server_ready", ({ startup_time }) => {
           // setProgress(100);
-          // setIsReady(true);
+          setIsReady(true);
           // setStartupTime(startup_time.toFixed(2));
           // window.location.reload(); // Commented out: This can cause post-login redirection issues.
           console.log("Server is ready, startup time:", startup_time); // Log instead of reload
@@ -121,8 +119,8 @@ const App = () => {
   //   );
   // }
 
-  // if(!isBackendUp) {
-  //   return <CyberLoader isLoading={isBackendUp} />
+  // if(!isReady || !isBackendUp) {
+  //   return <CyberLoader isLoading={isReady || isBackendUp} />
   // }
 
   
@@ -133,7 +131,8 @@ const App = () => {
         <Routes>
         {/* Public route without sidebar */}
           <Route path="/" element={<Index />} /> {/* Index page, handles showing AuthModal via button clicks */}
-          <Route path="/loading" element={<CyberLoader />} />
+        <Route path="/loading" element={<CyberLoader />} />
+  
           {/* Removed top-level /login route that pointed to AuthModal */}
           {/* Routes with sidebar, potentially protected by MainLayout */}
           <Route element={<MainLayout />}>

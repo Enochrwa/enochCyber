@@ -38,7 +38,7 @@ const ThreatFeedsInteractive = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/v1/threat-intelligence/feeds');
+      const response = await fetch('https://ecyber-backend.onrender.com/api/v1/threat-intelligence/feeds');
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }

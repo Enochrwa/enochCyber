@@ -3,7 +3,7 @@ import axios from 'axios';
 
 // Define the base URL for the API. Adjust if your backend is served elsewhere.
 // Assuming the backend is served on the same domain, prefixed with /api/v1
-const API_BASE_URL = 'http://127.0.0.1:8000/api/v1'; 
+const API_BASE_URL = 'https://ecyber-backend.onrender.com/api/v1'; 
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,

@@ -174,7 +174,7 @@ export default function useSocket(): UseSocketReturn {
   const connect = useCallback(() => {
     if (socketRef.current?.connected || initialized.current) return;
 
-    const newSocket = io('http://127.0.0.1:8000', {
+    const newSocket = io('https://ecyber-backend.onrender.com', {
       path: '/socket.io',             // Matches your FastAPI mount
       transports: ['websocket'],
       reconnectionAttempts: 5,

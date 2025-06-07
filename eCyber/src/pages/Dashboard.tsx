@@ -247,7 +247,7 @@ const Dashboard = () => {
       setIsLoadingApiEmergingThreats(true);
       setErrorApiEmergingThreats(null);
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/v1/threat-intelligence/emerging-threats');
+        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/threat-intelligence/emerging-threats');
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -291,7 +291,7 @@ const Dashboard = () => {
       setIsLoadingThreatFeeds(true);
       setErrorThreatFeeds(null);
       try {
-        const response = await fetch('/api/v1/threat-intelligence/feeds');
+        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/threat-intelligence/feeds');
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -311,7 +311,7 @@ const Dashboard = () => {
       setIsLoadingUserSummary(true);
       setErrorUserSummary(null);
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/v1/users');
+        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/users');
         // const response = await fetch('https://ecyber-backend.onrender.com/api/v1/users');
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
@@ -333,7 +333,7 @@ const Dashboard = () => {
       setIsLoadingMlAccuracy(true);
       setErrorMlAccuracy(null);
       try {
-        const response = await fetch('/api/v1/ml-models/accuracy');
+        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/ml-models/accuracy');
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -353,7 +353,7 @@ const Dashboard = () => {
       setIsLoadingUsersList(true);
       setErrorUsersList(null);
       try {
-        const response = await fetch('/api/v1/users/'); // Assuming this is the correct endpoint from v1 router
+        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/users/'); // Assuming this is the correct endpoint from v1 router
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -373,7 +373,7 @@ const Dashboard = () => {
       setIsLoadingGeneralSettings(true);
       setErrorGeneralSettings(null);
       try {
-        const response = await fetch('/api/v1/settings/general');
+        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/settings/general');
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -482,7 +482,7 @@ const Dashboard = () => {
         setIsLoadingNetworkStats(true);
         try {
           // TODO: Add authentication headers if required by the backend
-          const response = await fetch('/api/network/stats'); 
+          const response = await fetch('https://ecyber-backend.onrender.com/api/network/stats'); 
           if (!response.ok) {
             throw new Error(`Failed to fetch network stats: ${response.statusText}`);
           }
@@ -807,7 +807,7 @@ const Dashboard = () => {
                 
                 <MetricsCard 
                   title="Active Users"
-                  value={isLoadingUserSummary ? "Loading..." : (userSummaryData ? String(userSummaryData?.length) : "N/A")}
+                  value={isLoadingUserSummary ? "Loading..." : (userSummaryData ? String(userSummaryData?.length) : "0")}
                   description={
                     isLoadingUserSummary ? "" : 
                     errorUserSummary ? `Error: ${errorUserSummary.substring(0,20)}...` :
@@ -1021,7 +1021,7 @@ const Dashboard = () => {
                           <CardTitle className="text-base">Sniffer Performance</CardTitle>
                         </CardHeader>
                         <CardContent className="text-sm space-y-2">
-                          <p><strong>Total Packets Processed:</strong> {networkStats.total_packets?.toLocaleString() || 'N/A'}</p>
+                          <p><strong>Total Packets Processed:</strong> {networkStats.total_packets?.toLocaleString() || '0'}</p>
                           <p><strong>Total Bytes Sniffed:</strong> {(networkStats.total_bytes_processed / (1024*1024))?.toFixed(2) || 'N/A'} MB</p>
                           <p><strong>Sniffer Uptime:</strong> {networkStats.uptime_seconds?.toFixed(0) || 'N/A'} seconds</p>
                            <p><strong>Avg. Packets/Sec:</strong> {networkStats.avg_packets_per_second?.toFixed(2) || 'N/A'}</p>

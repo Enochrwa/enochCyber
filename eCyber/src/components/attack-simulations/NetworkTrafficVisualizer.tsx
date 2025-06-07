@@ -352,12 +352,16 @@ const NetworkTrafficVisualizer = () => {
 
   useEffect(() =>{
 
-    if(snifferSocket){
-      snifferSocket?.on("packet_summary", (data: any) => {
-        setPackets(prev => [...prev])
-        console.log("Packet summary: ", data)
-      })
+    if (snifferSocket) {
+      snifferSocket.on("packet_summary", (data: any) => {
+        setPackets(prev => {
+          const updated = [...prev, data];
+          return updated.slice(-100); // keep only the last 100
+        });
+        
+      });
     }
+    
 
   },[snifferSocket]);
 
@@ -378,7 +382,7 @@ const NetworkTrafficVisualizer = () => {
       (
         async () => {
           try {
-            const info = await axios.get("http://127.0.0.1:8000/api/system/interfaces");
+            const info = await axios.get("https://ecyber-backend.onrender.com/api/system/interfaces");
             // const info = await axios.get("https://ecyber-backend.onrender.com/api/system/interfaces");
             if (info.data) {
               dispatch(getNetworkInterfaces(info.data))

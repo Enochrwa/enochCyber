@@ -2,6 +2,12 @@
 backend/__pycache__/
 backend/dist/
 backend/build/
+venv
+build
+dist
+_pycache
+main.spec
+routes.txt
 # Python
 __pycache__/
 *.py[cod]
@@ -20,3 +26,13 @@ eCyber/dist_electron/
 *.log
 *.lock
 .DS_Store
+# Ignore PyInstaller and build artifacts
+build/
+dist/
+*.exe
+*.pkg
+*.pyz
+*.toc
+*.zip
+
+
