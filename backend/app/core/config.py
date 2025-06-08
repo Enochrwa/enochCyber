@@ -1,3 +1,4 @@
+import os # Ensure os is imported
 from pydantic import AnyHttpUrl
 from typing import List
 from pydantic_settings import BaseSettings
@@ -27,7 +28,7 @@ class Settings(BaseSettings):
     PRODUCTION: bool = False
 
     # Redis for production scaling
-    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
     class Config:
         case_sensitive = True

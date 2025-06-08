@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from typing import List, Dict
 from datetime import datetime, timedelta
@@ -7,8 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..services.detection.signature import SignatureEngine
 from ..database import get_db
-from ..models.log import NetworkLog # Assuming NetworkLog has source_ip, threat_type, severity, timestamp
-from ..utils.geo_utils import get_country_from_ip # Import the geo utility
+from ..models.log import NetworkLog
+from ..models.user import User
+from ..core.security import get_current_active_user
+from ..utils.geo_utils import get_country_from_ip
+from ..schemas.rule import ThreatSignatureRuleCreate # Added
 
 router = APIRouter()
 signature_engine = SignatureEngine()
@@ -17,6 +20,7 @@ signature_engine = SignatureEngine()
 @router.get("/", response_model=List[Dict])
 async def get_threats(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),  # Added
     limit: int = 100,
     severity: str = None,
     time_range: str = "24h",
@@ -65,26 +69,33 @@ async def get_threats(
     ]
 
 
-@router.get("/rules", response_model=List[Dict])
-async def get_signature_rules():
+@router.get("/rules/", response_model=List[Dict]) # Added trailing slash
+async def get_signature_rules(current_user: User = Depends(get_current_active_user)):  # Added current_user
     """Get all signature-based detection rules"""
     return signature_engine.get_rules()
 
 
-@router.post("/rules")
-async def add_signature_rule(rule: Dict):
+@router.post("/rules/")
+async def add_signature_rule(rule: ThreatSignatureRuleCreate, current_user: User = Depends(get_current_active_user)):
     """Add a new signature rule"""
-    if signature_engine.add_rule(rule):
+    if not current_user.is_superuser:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator privileges required")
+
+    # Assuming signature_engine.add_rule expects a dict
+    # The actual structure expected by signature_engine.add_rule might need adjustment
+    # if it's not just a flat dictionary of these fields.
+    if signature_engine.add_rule(rule.dict()):
         return JSONResponse(
             content={"status": "success", "message": "Rule added successfully"},
-            status_code=201,
+            status_code=status.HTTP_201_CREATED,
         )
     else:
-        raise HTTPException(status_code=400, detail="Failed to add rule")
+        # Consider more specific error if add_rule returns False for known reasons (e.g. duplicate name)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to add rule. Invalid rule data or rule already exists.")
 
 
-@router.get("/summary", response_model=Dict)
-async def get_threat_summary(db: AsyncSession = Depends(get_db)):
+@router.get("/summary/", response_model=Dict)
+async def get_threat_summary(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_active_user)):  # Added current_user
     """Get threat summary statistics"""
     # Last 24 hours
     time_filter = datetime.utcnow() - timedelta(hours=24)
@@ -112,9 +123,10 @@ async def get_threat_summary(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.get("/geolocated", response_model=List[Dict])
+@router.get("/geolocated/", response_model=List[Dict]) # Added trailing slash
 async def get_geolocated_threats(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),  # Added
     limit: int = 100,
     hours: int = 24,
 ):

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.pool import NullPool
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
-
+import os # Ensure os is imported
 from .core.config import settings
 import logging
 from contextlib import asynccontextmanager, contextmanager
@@ -52,8 +52,14 @@ SyncSessionLocal = sessionmaker(
 async def init_db():
     """Initialize database tables in correct order"""
     async with engine.begin() as conn:
-        # Drop all tables first (optional, for development)
-        await conn.run_sync(Base.metadata.drop_all, checkfirst=True)  # Add this line
+        # Check an environment variable to determine if tables should be dropped.
+        # Only drop tables if APP_ENV is explicitly set to "development".
+        app_env = os.getenv("APP_ENV", "production").lower() # Default to "production" if not set
+        if app_env == "development":
+            logger.info("APP_ENV is 'development', dropping all tables...")
+            await conn.run_sync(Base.metadata.drop_all, checkfirst=True)
+        else:
+            logger.info("Skipping drop_all tables in non-development environment.")
 
         # First pass: Create tables without foreign key dependencies
         await conn.run_sync(
