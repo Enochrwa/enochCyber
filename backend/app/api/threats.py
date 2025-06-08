@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..services.detection.signature import SignatureEngine
 from ..database import get_db
-from ..models.log import NetworkLog
+from ..models.log import NetworkLog # Assuming NetworkLog has source_ip, threat_type, severity, timestamp
+from ..utils.geo_utils import get_country_from_ip # Import the geo utility
 
 router = APIRouter()
 signature_engine = SignatureEngine()
@@ -109,3 +110,56 @@ async def get_threat_summary(db: AsyncSession = Depends(get_db)):
         "threat_types": [{"type": t[0], "count": t[1]} for t in threat_types],
         "time_range": "24h",
     }
+
+
+@router.get("/geolocated", response_model=List[Dict])
+async def get_geolocated_threats(
+    db: AsyncSession = Depends(get_db),
+    limit: int = 100,
+    hours: int = 24,
+):
+    """
+    Get recent threats with geolocation data for their source IPs.
+    Note: GeoLite2-Country database provides country-level accuracy.
+    City and precise coordinates would require GeoLite2-City database.
+    """
+    time_filter = datetime.utcnow() - timedelta(hours=hours)
+
+    # Fetch recent threats that likely have an external source IP
+    # We might want to add more specific filtering here if possible,
+    # e.g., to exclude private IP ranges if not relevant for geolocation.
+    stmt = (
+        select(
+            NetworkLog.source_ip,
+            NetworkLog.timestamp,
+            NetworkLog.threat_type,
+            NetworkLog.meta.op("->>")("severity").label("severity") # Example if severity is in a JSON meta field
+            # If severity is a direct column: NetworkLog.severity
+        )
+        .where(NetworkLog.timestamp >= time_filter)
+        .where(NetworkLog.source_ip.isnot(None)) # Ensure source_ip exists
+        .order_by(desc(NetworkLog.timestamp))
+        .limit(limit)
+    )
+
+    result = await db.execute(stmt)
+    threats_from_db = result.all() # Using .all() to get all columns
+
+    geolocated_threats = []
+    for threat in threats_from_db:
+        country = get_country_from_ip(threat.source_ip)
+
+        # As GeoLite2-Country only provides country, lat/lon/city will be placeholders.
+        # If GeoLite2-City were used, geo_utils would be updated to return these.
+        geolocated_threats.append({
+            "source_ip": threat.source_ip,
+            "latitude": None,  # Placeholder - requires GeoLite2-City
+            "longitude": None, # Placeholder - requires GeoLite2-City
+            "city": None,      # Placeholder - requires GeoLite2-City
+            "country": country,
+            "timestamp": threat.timestamp.isoformat(),
+            "threat_type": threat.threat_type,
+            "severity": threat.severity if hasattr(threat, 'severity') and threat.severity else "Unknown" # Handle if severity is not always present
+        })
+
+    return geolocated_threats

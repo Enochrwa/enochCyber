@@ -23,7 +23,8 @@ import { cn } from "@/lib/utils";
 // import Header from '../components/layout/Header';
 // import Sidebar from '../components/layout/Sidebar';
 import MetricsCard from '../components/dashboard/MetricsCard';
-import ThreatMap from '../components/dashboard/ThreatMap';
+import ExistingThreatMapWidget from '../components/dashboard/ThreatMap'; // Renamed for clarity
+import ActualGeographicalThreatMap from '../components/maps/ThreatMap'; // Import the new map
 import ActivityStream from '../components/dashboard/ActivityStream';
 import AIAssistant from '../components/common/AIAssistant';
 import { useTelemetrySocket } from '@/components/live-system/lib/socket';
@@ -918,7 +919,8 @@ const Dashboard = () => {
               </TabsList>
               
               <TabsContent value="overview" className="space-y-4">
-                <ThreatMap 
+                {/* Existing ThreatMap widget - which is more of an overview/chart combo */}
+                <ExistingThreatMapWidget
                   className="animate-fade-in" 
                   threatsData={
                     [
@@ -927,6 +929,19 @@ const Dashboard = () => {
                     ]
                   } 
                 />
+
+                {/* New Geographical Threat Map */}
+                <Card className="mt-6">
+                  <CardHeader>
+                    <CardTitle className="text-lg font-medium flex items-center">
+                      <Globe className="mr-2 text-blue-400" size={18} />
+                      Geographical Threat Hotspots
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ActualGeographicalThreatMap />
+                  </CardContent>
+                </Card>
 
                 {/* Inserted AnomalyInsightsSection here */}
                 {/* <AnomalyInsightsSection /> */}

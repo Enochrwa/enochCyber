@@ -152,3 +152,44 @@ def test_app_is_imported():
     assert app is not None
     # from fastapi import FastAPI
     # assert isinstance(app, FastAPI) # This would be more specific
+
+
+def test_get_geolocated_threats():
+    """Test the /api/v1/threats/geolocated endpoint."""
+    # Test with default parameters
+    response_default = client.get("/api/v1/threats/geolocated")
+    assert response_default.status_code == 200
+    data_default = response_default.json()
+    assert isinstance(data_default, list)
+
+    if len(data_default) > 0:
+        item = data_default[0]
+        assert "source_ip" in item
+        assert "country" in item  # Can be None if IP not found or private
+        assert "timestamp" in item
+        assert "threat_type" in item
+        assert "severity" in item
+        # Latitude, longitude, city are expected to be present, even if null
+        assert "latitude" in item
+        assert "longitude" in item
+        assert "city" in item
+
+    # Test with specific parameters (e.g., limit to 5 results, 48 hours window)
+    # This part assumes there's enough varied data in the test DB or mock data
+    # to actually test the filtering. For now, we're just checking the structure.
+    response_params = client.get("/api/v1/threats/geolocated?limit=5&hours=48")
+    assert response_params.status_code == 200
+    data_params = response_params.json()
+    assert isinstance(data_params, list)
+    assert len(data_params) <= 5 # Check if limit is respected
+
+    if len(data_params) > 0:
+        item = data_params[0]
+        assert "source_ip" in item
+        assert "country" in item
+        assert "timestamp" in item
+        assert "threat_type" in item
+        assert "severity" in item
+        assert "latitude" in item
+        assert "longitude" in item
+        assert "city" in item
