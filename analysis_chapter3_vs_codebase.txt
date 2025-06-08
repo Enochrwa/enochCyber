@@ -1,0 +1,94 @@
+## Analysis of Chapter 3 (Methodology and Materials) vs. Codebase Structure
+
+This document outlines the correlation between the descriptions in Chapter 3 of `docs/isimbi.txt` and the actual file/directory structure of the `backend/` and `eCyber/` components of the project.
+
+**Overall Inconsistency:**
+A significant inconsistency is the repeated reference to "smart bus stand" monitoring within Chapter 3 (sections 3.2, 3.3.1.1, 3.3.1.2, 3.4, 3.6.3, 3.6.4, 3.6.5, 3.6.6). The codebase (`backend/`, `eCyber/`) and the majority of Chapter 1 and 2 clearly indicate a network security and malicious activity monitoring system. The "smart bus stand" references appear to be from a different project or a misunderstanding and do not align with the implemented system.
+
+**1. Parts of Methodology and Materials Clearly Present in Codebase:**
+
+*   **Network Data Collection (interpreted from 3.3, 3.3.1.2):**
+    *   `backend/packet_sniffer_service.py`: Core service for capturing network packets.
+    *   `backend/sniff.py`: Likely contains sniffing logic or scripts.
+    *   `backend/app/models/packet.py`: Data model for packets.
+*   **Data Analysis (Machine Learning) (3.4):**
+    *   `backend/ml/`: Directory dedicated to machine learning.
+        *   `backend/ml/feature_extraction.py`: For processing data for ML models.
+        *   `backend/ml/train.py`: For training ML models.
+        *   `backend/ml/models/`: Contains various ML model files (e.g., `eCyber_anomaly_isolation`, `eCyber_classifier_models`).
+    *   `backend/api/ml_models_api.py`: API for interacting with ML models.
+    *   `backend/app/services/threat_analysis_service.py`: Service for analyzing threats, likely using ML outputs.
+    *   `eCyber/src/pages/Models.tsx`: Frontend component for displaying or interacting with models.
+*   **Software Requirements (dependencies) (3.4.1):**
+    *   `backend/requirements.txt`: Lists Python dependencies for the backend.
+    *   `eCyber/package.json`: Lists JavaScript/TypeScript dependencies for the frontend.
+*   **Functional Requirement: Real-time Threat Detection (3.4.2):**
+    *   `backend/packet_sniffer_service.py`: Captures traffic in real-time.
+    *   `backend/app/services/detection/`: Contains various specific detection logic modules.
+    *   `backend/malware_events_namespace.py`: Likely handles real-time events related to malware.
+    *   `eCyber/src/components/live-system/`: Frontend components for displaying live system status and threats.
+    *   `eCyber/src/hooks/useSocket.ts`, `usePacketSnifferSocket.ts`: Indicate real-time communication for updates.
+*   **Functional Requirement: Intrusion Prevention System (IPS) (3.4.2):**
+    *   `backend/app/api/ips.py`: API for IPS functionalities.
+    *   `backend/app/models/ips.py`: Data model for IPS rules/settings.
+    *   `backend/app/schemas/ips.py`: Data schemas for IPS.
+    *   `backend/app/services/ips/`: Business logic for IPS.
+    *   `backend/app/middleware/blocker_middleware.py`: Potentially part of the prevention mechanism.
+*   **Functional Requirement: Machine Learning-Based Analysis (3.4.2):** (Covered under Data Analysis above)
+*   **Functional Requirement: Log Management and Reporting (3.4.2):**
+    *   `backend/logs/`: Directory containing log files (e.g., `main.log`, `signature_engine.log`).
+    *   `backend/app/models/log.py`: Data model for logs.
+    *   `backend/app/schemas/log.py`: Data schemas for logs.
+    *   `backend/app/services/logging/`: Services related to log handling.
+    *   `eCyber/src/pages/Logs.tsx`: Frontend page for viewing logs.
+    *   `eCyber/src/components/dashboard/`: Dashboard components likely use log data for reporting.
+*   **Functional Requirement: User Access Control and Authentication (3.4.2):**
+    *   `backend/app/api/auth.py`: API for authentication.
+    *   `backend/app/services/auth_service.py`: Service for authentication logic.
+    *   `backend/app/models/user.py`: User data model.
+    *   `backend/app/core/security.py`: Core security functions (hashing, etc.).
+    *   `backend/app/api/admin.py`, `backend/app/api/users.py`: Suggest user roles and management (supporting RBAC).
+    *   `eCyber/src/pages/AuthModal.tsx`: Frontend authentication UI.
+    *   `eCyber/src/context/AuthContext.tsx`: Frontend state management for authentication.
+    *   `eCyber/src/components/TwoFactorAuthSettings.tsx`: Implementation of MFA.
+*   **Non-Functional Requirement: Usability (Dashboard and Alerting) (3.5.3):**
+    *   `eCyber/`: The entire frontend project aims to provide a usable interface.
+    *   `eCyber/src/components/dashboard/`: Specific components for the dashboard.
+    *   `eCyber/src/alert/`: Components and logic for displaying alerts.
+    *   `eCyber/electron/notification.html`, `eCyber/electron/notification_renderer.js`: Desktop notification system.
+*   **System Development Methodology: Testing (3.6.6):**
+    *   `backend/tests/`: Directory for backend tests.
+    *   `eCyber/src/alert/components/__tests__/`: Example of frontend tests. (Though not comprehensive, it shows intent).
+
+**2. Parts Vaguely Present or Seem to Have Partial Implementation:**
+
+*   **Data Collection (Surveys, Interviews, Non-network IoT sensors) (3.3):** While network data collection is strong, other methods mentioned (surveys, interviews) for the "University of Kigali" case study are not evidenced in the codebase. If "integrated IoT devices" refers to something beyond network gear, that's also not apparent.
+*   **Data Collection: Sampling (3.3.1.4):** Packet sampling might be implemented within `backend/packet_sniffer_service.py` or related network processing modules, but it's not explicitly clear from filenames alone.
+*   **Data Analysis: Qualitative and Geographic Analysis (3.4):**
+    *   Qualitative analysis beyond what ML provides is not evident.
+    *   "Geographic analysis" tools/libraries are not obviously present (e.g., no GeoIP mapping libraries explicitly listed in filenames, though `backend/app/utils/geo_utils.py` suggests some geolocation capabilities might exist or are planned).
+*   **Non-Functional Requirement: Performance (Low-latency, High-throughput) (3.5.3):**
+    *   The choice of technologies (FastAPI for backend, modern frontend stack) suggests performance is a consideration. However, actual achievement requires profiling and optimization. Code structure (e.g. use of `async`) supports this, but it's an ongoing concern rather than a finished feature proven by file names.
+*   **Non-Functional Requirement: Scalability (3.5.3):**
+    *   The architecture (separate backend/frontend, API-driven) allows for scalability (e.g., containerization, load balancing). This is an architectural property that is supported by the codebase structure but not fully proven by it.
+*   **Non-Functional Requirement: Security (Standards Adherence, Encryption) (3.5.3):**
+    *   `backend/app/core/security.py` is present.
+    *   TLS/SSL for communication (mentioned in Chapter 2) is a deployment detail.
+    *   Adherence to standards like ISO 27001 or GDPR involves policies and practices beyond just code; the codebase can enable compliance but doesn't guarantee it. `backend/app/utils/security.py` may also play a role.
+*   **System Development Methodology: Design Documentation (3.6.4):** Chapter 3 mentions design documents, but only `isimbi.txt` itself is in `docs/`. If other design documents (use case diagrams, flowcharts as mentioned in 3.6.3) exist, they are not in the provided repository structure.
+
+**3. Parts Mentioned in Chapter 3 but Seem to be Missing Entirely:**
+
+*   **Data Collection: Physical Observations for "Bus Stand" (3.3.1.2):** Tied to the inconsistent "smart bus stand" theme. No code for this.
+*   **Data Collection: Interviews (3.3.1.3):** No tools or data storage for interview transcripts/analysis visible.
+*   **Non-Functional Requirement: Reliability (99.9% uptime, failover) (3.5.3):**
+    *   No explicit code for failover mechanisms or high-availability patterns is visible in the file structure. This is often handled at the infrastructure level but can have code implications.
+*   **Specific "Smart Bus Stand" Functionalities:** Any functionalities directly related to monitoring bus arrivals, passenger flow, etc., as implied by the inconsistent sections of Chapter 3, are missing. The codebase is clearly focused on network security.
+
+**4. Inconsistencies Between Chapter 3 and Apparent Nature of Project:**
+
+*   **Primary Inconsistency: "Smart Bus Stand" vs. Network Security:**
+    *   Chapter 3, sections 3.2, 3.3.1.1 ("documentation of... smart bus stands"), 3.3.1.2 ("monitoring bus stand activities"), 3.4 ("smart bus stand monitoring system project"), 3.6.3, 3.6.4, 3.6.5, 3.6.6 (all referencing "IoT-based smart bus stand monitoring system") are completely at odds with the project's actual focus on network security, as evidenced by the codebase (e.g., `packet_sniffer_service.py`, `ml/models/eCyber_anomaly_isolation`, `api/firewall_api.py`, `eCyber/src/components/attack-simulations`) and other parts of `isimbi.txt` (Abstract, Chapter 1, Chapter 2).
+*   **Case Study Location vs. Generality:** While the case study is mentioned as University of Kigali, Musanze campus (3.2), the system itself (`backend/`, `eCyber/`) appears to be a general network security tool, not specifically tailored with unique features solely for that campus, other than perhaps being tested there.
+
+This analysis should help in aligning Chapter 3 with the actual project or highlighting areas where the documentation needs significant revision.
