@@ -151,3 +151,35 @@ export const removeAuthToken = () => {
 //   const response = await apiClient.get('/users/me'); // Assuming a /users/me endpoint
 //   return response.data;
 // };
+
+// Add a response interceptor to handle 401 errors (e.g., token expired)
+apiClient.interceptors.response.use(
+  (response) => {
+    // Any status code that lie within the range of 2xx cause this function to trigger
+    return response;
+  },
+  (error) => {
+    // Any status codes that falls outside the range of 2xx cause this function to trigger
+    if (error.response && error.response.status === 401) {
+      // Check if the original request was NOT to a login-related path to avoid logout loops on login failure
+      const originalRequestPath = error.config.url;
+      if (originalRequestPath && !originalRequestPath.includes('/auth/login') && !originalRequestPath.includes('/auth/verify-2fa')) {
+        removeAuthToken(); // Clear the invalid/expired token
+
+        // Redirect to login page
+        // Using window.location.href for simplicity in a non-component file.
+        // In a more complex setup, might dispatch an event or use a navigation service.
+        if (window.location.pathname !== '/') { // Avoid redirecting if already on a public page like home/login
+            // Consider redirecting to a specific login page if '/' is not it.
+            // For now, assuming '/' is where login is accessible or where unauthenticated users should land.
+            window.location.href = '/';
+        }
+
+        // Optionally, you could try to inform the user, though it's tricky from here.
+        // For example, setting a flag in localStorage that a top-level component reads.
+        localStorage.setItem('sessionExpired', 'true');
+      }
+    }
+    return Promise.reject(error);
+  }
+);

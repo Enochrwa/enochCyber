@@ -26,3 +26,10 @@ def get_firewall(request: Request) -> FirewallManager:
 def get_signature_engine(request: Request) -> SignatureEngine:
     """Get the signature engine instance"""
     return request.app.state.signature_engine
+
+from redis.asyncio import Redis as AsyncRedis # Or just Redis if using older redis-py
+
+async def get_redis_client(request: Request) -> AsyncRedis:
+    if not hasattr(request.app.state, 'redis_client') or request.app.state.redis_client is None:
+        raise RuntimeError("Redis client not available in app state. Ensure it's initialized in main.py lifespan.")
+    return request.app.state.redis_client

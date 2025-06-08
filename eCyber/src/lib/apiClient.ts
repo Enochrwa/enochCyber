@@ -1,24 +1,8 @@
-import axios from 'axios';
+// eCyber/src/lib/apiClient.ts
+// This file now re-exports the centralized apiClient from services/api.ts
+// to ensure a single instance is used throughout the application.
 
-// Vite provides `import.meta.env.DEV` to check for development mode
-// Vite also provides `import.meta.env.PROD` to check for production mode (opposite of DEV)
-const isDevelopment = import.meta.env.DEV;
-
-// Backend URL when running in production/packaged mode
-const PROD_BACKEND_URL = 'https://ecyber-backend.onrender.com';
-
-const apiClient = axios.create({
-  baseURL: isDevelopment ? '/' : PROD_BACKEND_URL,
-});
-
-// You can add interceptors here if needed for auth tokens, error handling, etc.
-// For example:
-// apiClient.interceptors.request.use(config => {
-//   // const token = localStorage.getItem('token');
-//   // if (token) {
-//   //   config.headers.Authorization = `Bearer ${token}`;
-//   // }
-//   return config;
-// });
+// Adjust the import path if necessary. Assuming '@/' resolves to 'eCyber/src/'
+import { apiClient } from '@/services/api';
 
 export default apiClient;
