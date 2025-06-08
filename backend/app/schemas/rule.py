@@ -54,3 +54,24 @@ class IDSRuleResponse(IDSRuleBase):
 class PaginatedIDSRuleResponse(BaseModel):
     total: int
     rules: List[IDSRuleResponse]
+
+# Threat Signature Rule Schemas
+class ThreatSignatureRuleBase(BaseModel):
+    name: str = Field(..., min_length=3, max_length=100, description="Unique name for the signature rule")
+    pattern: str = Field(..., min_length=1, description="The signature pattern to match (e.g., regex, string)")
+    action: str = Field(default="alert", description="Action to take on match (e.g., alert, block)")
+    severity: str = Field(default="medium", description="Severity of the threat (e.g., low, medium, high, critical)")
+    description: Optional[str] = Field(None, max_length=255, description="Optional description for the rule")
+    protocol: Optional[str] = Field(None, description="Protocol to match (e.g., TCP, UDP, HTTP)")
+    is_active: bool = Field(default=True, description="Whether the rule is active")
+
+class ThreatSignatureRuleCreate(ThreatSignatureRuleBase):
+    pass
+
+class ThreatSignatureRule(ThreatSignatureRuleBase):
+    id: int
+    created_at: datetime.datetime
+    updated_at: Optional[datetime.datetime] = None
+
+    class Config:
+        from_attributes = True

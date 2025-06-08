@@ -38,6 +38,7 @@ import AnomalyInsightsSection from '@/components/dashboard/AnomalyInsightsSectio
 import HttpActivityView from '../components/dashboard/HttpActivityView'; // Import HTTP Log View
 import DnsActivityView from '../components/dashboard/DnsActivityView';   // Import DNS Log View
 import { UserList } from '@/components/dashboard/UserList'; // Import the new component
+import apiClient from '@/lib/apiClient'; // Added apiClient import
 
 // Mock data for activity stream - REMOVED
 
@@ -248,11 +249,8 @@ const Dashboard = () => {
       setIsLoadingApiEmergingThreats(true);
       setErrorApiEmergingThreats(null);
       try {
-        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/threat-intelligence/emerging-threats');
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data: BackendEmergingThreat[] = await response.json();
+        const response = await apiClient.get<BackendEmergingThreat[]>('/threat-intelligence/emerging-threats');
+        const data = response.data;
         
         const processedData: DashboardEmergingThreat[] = data.slice(0, 3).map((threat, index) => { // Take top 3 for dashboard display
           let severity: DashboardEmergingThreat["severity"] = "unknown";
@@ -278,8 +276,15 @@ const Dashboard = () => {
           };
         });
         setApiEmergingThreats(processedData);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
+      } catch (e: any) {
+        let msg = 'An unknown error occurred';
+        if (e.response) {
+          msg = e.response.data?.detail || e.response.data?.message || e.message;
+        } else if (e.request) {
+          msg = 'No response from server. Check network connection.';
+        } else {
+          msg = e.message;
+        }
         setErrorApiEmergingThreats(msg);
         console.error("Failed to fetch dashboard emerging threats:", e);
       } finally {
@@ -292,14 +297,18 @@ const Dashboard = () => {
       setIsLoadingThreatFeeds(true);
       setErrorThreatFeeds(null);
       try {
-        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/threat-intelligence/feeds');
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data: ApiFeedStatus[] = await response.json();
+        const response = await apiClient.get<ApiFeedStatus[]>('/threat-intelligence/feeds');
+        const data = response.data;
         setThreatFeedsApiData(data);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
+      } catch (e: any) {
+        let msg = 'An unknown error occurred';
+        if (e.response) {
+          msg = e.response.data?.detail || e.response.data?.message || e.message;
+        } else if (e.request) {
+          msg = 'No response from server. Check network connection.';
+        } else {
+          msg = e.message;
+        }
         setErrorThreatFeeds(msg);
         console.error("Failed to fetch threat feeds:", e);
       } finally {
@@ -312,16 +321,19 @@ const Dashboard = () => {
       setIsLoadingUserSummary(true);
       setErrorUserSummary(null);
       try {
-        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/users');
-        // const response = await fetch('https://ecyber-backend.onrender.com/api/v1/users');
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data: UserSummaryData = await response.json();
+        const response = await apiClient.get<UserSummaryData>('/users/summary');
+        const data = response.data;
         setUserSummaryData(data);
         console.log("Users: ", data)
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
+      } catch (e: any) {
+        let msg = 'An unknown error occurred';
+        if (e.response) {
+          msg = e.response.data?.detail || e.response.data?.message || e.message;
+        } else if (e.request) {
+          msg = 'No response from server. Check network connection.';
+        } else {
+          msg = e.message;
+        }
         setErrorUserSummary(msg);
         console.error("Failed to fetch user summary:", e);
       } finally {
@@ -334,14 +346,18 @@ const Dashboard = () => {
       setIsLoadingMlAccuracy(true);
       setErrorMlAccuracy(null);
       try {
-        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/ml-models/accuracy');
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data: MlAccuracyData = await response.json();
+        const response = await apiClient.get<MlAccuracyData>('/ml-models/accuracy');
+        const data = response.data;
         setMlAccuracyData(data);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
+      } catch (e: any) {
+        let msg = 'An unknown error occurred';
+        if (e.response) {
+          msg = e.response.data?.detail || e.response.data?.message || e.message;
+        } else if (e.request) {
+          msg = 'No response from server. Check network connection.';
+        } else {
+          msg = e.message;
+        }
         setErrorMlAccuracy(msg);
         console.error("Failed to fetch ML accuracy:", e);
       } finally {
@@ -351,22 +367,26 @@ const Dashboard = () => {
     fetchMlAccuracy();
 
     const fetchUsersList = async () => {
-      setIsLoadingUsersList(true);
-      setErrorUsersList(null);
-      try {
-        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/users/'); // Assuming this is the correct endpoint from v1 router
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data: UserListData[] = await response.json();
-        setUsersListData(data);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
-        setErrorUsersList(msg);
-        console.error("Failed to fetch users list:", e);
-      } finally {
-        setIsLoadingUsersList(false);
-      }
+      // setIsLoadingUsersList(true); // Handled by UserList.tsx
+      // setErrorUsersList(null); // Handled by UserList.tsx
+      // try {
+        // const response = await apiClient.get<UserListData[]>('/users/');
+        // const data = response.data;
+        // setUsersListData(data); // Handled by UserList.tsx
+      // } catch (e: any) {
+        // let msg = 'An unknown error occurred';
+        // if (e.response) {
+          // msg = e.response.data?.detail || e.response.data?.message || e.message;
+        // } else if (e.request) {
+          // msg = 'No response from server. Check network connection.';
+        // } else {
+          // msg = e.message;
+        // }
+        // setErrorUsersList(msg); // Handled by UserList.tsx
+        // console.error("Failed to fetch users list:", e);
+      // } finally {
+        // setIsLoadingUsersList(false); // Handled by UserList.tsx
+      // }
     };
     // fetchUsersList(); // Handled by UserList.tsx
 
@@ -374,18 +394,27 @@ const Dashboard = () => {
       setIsLoadingGeneralSettings(true);
       setErrorGeneralSettings(null);
       try {
-        const response = await fetch('https://ecyber-backend.onrender.com/api/v1/settings/general');
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data: GeneralSettingsData = await response.json();
+        const response = await apiClient.get<GeneralSettingsData>('/settings/general');
+        const data = response.data;
         setGeneralSettingsData(data);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : 'An unknown error occurred';
+      } catch (e: any) {
+        let msg = 'An unknown error occurred';
+        if (e.response) {
+          msg = e.response.data?.detail || e.response.data?.message || e.message;
+        } else if (e.request) {
+          msg = 'No response from server. Check network connection.';
+        } else {
+          msg = e.message;
+        }
         setErrorGeneralSettings(msg);
         console.error("Failed to fetch general settings:", e);
       } finally {
         setIsLoadingGeneralSettings(false);
+      }
+    };
+    // fetchUsersList(); // Handled by UserList.tsx
+
+    const fetchGeneralSettings = async () => {
       }
     };
     fetchGeneralSettings();
@@ -482,19 +511,23 @@ const Dashboard = () => {
       const fetchNetworkStats = async () => {
         setIsLoadingNetworkStats(true);
         try {
-          // TODO: Add authentication headers if required by the backend
-          const response = await fetch('https://ecyber-backend.onrender.com/api/network/stats'); 
-          if (!response.ok) {
-            throw new Error(`Failed to fetch network stats: ${response.statusText}`);
-          }
-          const data = await response.json();
+          const response = await apiClient.get<any>('/network/stats'); // Replace 'any' with a proper type
+          const data = response.data;
           setNetworkStats(data);
           toast({ title: "Network Stats Loaded", description: "Successfully fetched network statistics." });
-        } catch (error) {
-          console.error("Error fetching network stats:", error);
+        } catch (e: any) {
+          let msg = 'An unknown error occurred';
+          if (e.response) {
+            msg = e.response.data?.detail || e.response.data?.message || e.message;
+          } else if (e.request) {
+            msg = 'No response from server. Check network connection.';
+          } else {
+            msg = e.message;
+          }
+          console.error("Error fetching network stats:", e);
           toast({ 
             title: "Error Loading Network Stats", 
-            description: error instanceof Error ? error.message : "Could not load network stats.",
+            description: msg,
             variant: "destructive"
           });
         } finally {
@@ -808,11 +841,11 @@ const Dashboard = () => {
                 
                 <MetricsCard 
                   title="Active Users"
-                  value={isLoadingUserSummary ? "Loading..." : (userSummaryData ? String(userSummaryData?.length) : "0")}
+                  value={isLoadingUserSummary ? "Loading..." : (userSummaryData ? String(userSummaryData.total_users) : "0")}
                   description={
                     isLoadingUserSummary ? "" : 
                     errorUserSummary ? `Error: ${errorUserSummary.substring(0,20)}...` :
-                    (userSummaryData ? `0 admins, ${userSummaryData?.length} standard` : "No data")
+                    (userSummaryData ? `${userSummaryData.admin_users} admins, ${userSummaryData.standard_users} standard` : "No data")
                   }
                   icon={<Users size={16} />}
                   // trend={{ direction: 'neutral', value: '0%', label: 'unchanged' }} // Trend data not available

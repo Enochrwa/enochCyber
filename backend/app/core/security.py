@@ -1,10 +1,13 @@
 # backend/app/core/security.py
+import uuid # Added
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from typing import Optional, AsyncGenerator
 import os
 from fastapi import HTTPException, status, Depends
+from redis.asyncio import Redis as AsyncRedis # Added
+from ..core.dependencies import get_redis_client # Added
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -28,9 +31,11 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # relative to the /api/v1 prefix. The current one is "api/auth/token".
 # This will be: /api/v1/auth/login/token.
 # If main app has /api/v1 prefix, then "auth/login/token" is correct.
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login") # Corrected tokenUrl
 
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here")
+SECRET_KEY = os.getenv("SECRET_KEY")
+if SECRET_KEY is None:
+    raise ValueError("Missing SECRET_KEY environment variable. Application cannot start without it.")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -53,14 +58,24 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
         expire = datetime.utcnow() + timedelta(
             minutes=ACCESS_TOKEN_EXPIRE_MINUTES
         )  # Use constant
-    to_encode.update({"exp": expire})
+    jti = uuid.uuid4().hex # Generate a unique ID for the token
+    to_encode.update({"exp": expire, "jti": jti}) # Add jti claim
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
 
+async def add_token_to_blocklist(redis_client: AsyncRedis, jti: str, expires_at_timestamp: int):
+    """Adds a token's JTI to the Redis blocklist with a TTL equal to the token's remaining validity."""
+    now_timestamp = int(datetime.utcnow().timestamp())
+    ttl = expires_at_timestamp - now_timestamp
+    if ttl > 0:
+        await redis_client.setex(f"blocked_jti:{jti}", ttl, "true")
+
+
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db),  # db session is already provided
+    db: AsyncSession = Depends(get_db),
+    redis_client: AsyncRedis = Depends(get_redis_client) # Added redis_client
 ):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -70,29 +85,26 @@ async def get_current_user(
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: Optional[str] = payload.get("sub")
-        scope: Optional[str] = payload.get("scope")  # Get scope
+        scope: Optional[str] = payload.get("scope")
+        jti: Optional[str] = payload.get("jti")
 
-        if username is None:
+        if username is None or jti is None: # JTI check added
             raise credentials_exception
 
-        # Add this check:
+        if await redis_client.exists(f"blocked_jti:{jti}"): # Blocklist check
+            raise credentials_exception
+
         if scope == "2fa_required":
-            # This specific exception might need to be caught by a different handler
-            # or the client needs to know not to use this token for general API access.
-            # For now, a generic 401 is okay, but a more specific error could be 403 Forbidden.
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,  # Or status.HTTP_403_FORBIDDEN
+                status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token valid only for 2FA verification step. Full authentication required.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        token_data = TokenData(
-            username=username, scope=scope
-        )  # scope can still be passed to TokenData if needed elsewhere
+        token_data = TokenData(username=username, scope=scope)
     except JWTError:
         raise credentials_exception
 
-    # Use the db session directly provided by Depends(get_db)
     # Corrected the execute call
     result = await db.execute(select(User).where(User.username == token_data.username))
     user = result.scalars().first()
@@ -125,8 +137,10 @@ async def authenticate_user(
 
 
 async def get_current_user_for_2fa(
-    token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)
-) -> User:  # Return User model
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+    redis_client: AsyncRedis = Depends(get_redis_client) # Added redis_client
+) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials for 2FA",
@@ -137,19 +151,20 @@ async def get_current_user_for_2fa(
         username: Optional[str] = payload.get("sub")
         scope: Optional[str] = payload.get("scope")
         user_id: Optional[int] = payload.get("user_id")
+        jti: Optional[str] = payload.get("jti")
 
-        if username is None or scope != "2fa_required" or user_id is None:
+        if username is None or scope != "2fa_required" or user_id is None or jti is None: # JTI check added
             raise credentials_exception
 
-        # TokenData schema might not include user_id by default.
-        # We are not using TokenData here for constructing user object, but for validation if needed.
-        # For this function, direct use of payload fields is fine.
-        # token_data = TokenData(username=username, scope=scope)
+        if await redis_client.exists(f"blocked_jti:{jti}"): # Blocklist check
+            raise credentials_exception
+
+        # token_data = TokenData(username=username, scope=scope) # Not strictly needed for user fetching here
 
     except JWTError:
         raise credentials_exception
 
-    user = await db.get(User, user_id)  # Fetch user by user_id from token
+    user = await db.get(User, user_id)
     if user is None or user.username != username:  # Verify username matches
         raise credentials_exception
 

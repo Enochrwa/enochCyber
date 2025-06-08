@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from datetime import timedelta
+from fastapi_limiter.depends import RateLimiter # Added
 import pyotp  # Added
 from sqlalchemy.ext.asyncio import AsyncSession  # Added
 
@@ -12,23 +13,26 @@ from ..core.security import (
     get_current_user_for_2fa,  # Added
     ACCESS_TOKEN_EXPIRE_MINUTES,
 )
-from ..schemas.user import (
-    UserInDB,
-)  # UserInDB might be replaced by User model from models.user
-from ..schemas.token import Token  # Ensure Token schema is appropriate
-from ..schemas.auth import TwoFactorVerify  # Changed from TwoFactorVerificationRequest
-from ..database import get_db  # Added
-from ..models.user import User  # Added
+from ..schemas.user import UserRead # Changed UserInDB to UserRead
+from ..schemas.token import Token
+from ..schemas.auth import TwoFactorVerify
+from ..database import get_db
+from ..models.user import User
+from ..core.security import add_token_to_blocklist, oauth2_scheme, SECRET_KEY, ALGORITHM # Added
+from ..core.dependencies import get_redis_client # Added
+from redis.asyncio import Redis as AsyncRedis # Added
+from jose import jwt, JWTError # Added
 
 router = APIRouter()
 
 
 @router.post(
-    "/login"
-)  # response_model removed to allow for different response structures
+    "/login",
+    dependencies=[Depends(RateLimiter(times=5, seconds=60))] # Added RateLimiter
+)
 async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
-    db: AsyncSession = Depends(get_db),  # Added
+    db: AsyncSession = Depends(get_db),
 ):
     user = await authenticate_user(
         db, form_data.username, form_data.password
@@ -61,10 +65,14 @@ async def login_for_access_token(
         return {"access_token": access_token, "token_type": "bearer"}
 
 
-@router.post("/verify-2fa", response_model=Token)
+@router.post(
+    "/verify-2fa",
+    response_model=Token,
+    dependencies=[Depends(RateLimiter(times=5, seconds=60))] # Added RateLimiter
+)
 async def verify_2fa_login(
-    request_data: TwoFactorVerify,  # Changed from TwoFactorVerificationRequest
-    current_user: User = Depends(get_current_user_for_2fa),  # Changed to User model
+    request_data: TwoFactorVerify,
+    current_user: User = Depends(get_current_user_for_2fa),
     db: AsyncSession = Depends(get_db),
 ):
     # current_user here is the user object fetched based on the temporary 2FA token.
@@ -93,17 +101,36 @@ async def verify_2fa_login(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@router.get(
-    "/me", response_model=UserInDB
-)  # Keeping UserInDB for now, but should be User
+@router.get("/me", response_model=UserRead) # Changed from UserInDB
 async def read_users_me(
-    current_user: UserInDB = Depends(
-        get_current_active_user
-    ),  # This should use a User model that reflects DB structure
+    current_user: User = Depends(get_current_active_user) # current_user is SQLAlchemy User model
 ):
-    return current_user
+    return current_user # FastAPI will map User SQLAlchemy model to UserRead Pydantic model
 
 
 @router.post("/logout")
-async def logout():
-    return {"message": "Successfully logged out"}
+async def logout(
+    current_user: User = Depends(get_current_active_user),
+    token: str = Depends(oauth2_scheme),
+    redis_client: AsyncRedis = Depends(get_redis_client)
+):
+    try:
+        # Decode the token to get jti and exp without verifying expiry,
+        # as we want to blocklist even an expired token's jti if logout is attempted.
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options={"verify_exp": False})
+        jti = payload.get("jti")
+        exp_timestamp = payload.get("exp") # This is a Unix timestamp
+
+        if jti and exp_timestamp:
+            await add_token_to_blocklist(redis_client, jti, int(exp_timestamp))
+
+        return {"message": "Successfully logged out"}
+    except JWTError:
+        # Token is already invalid (e.g., malformed, wrong signature)
+        # User is effectively logged out.
+        return {"message": "Logout successful (token was invalid)"}
+    except Exception as e:
+        # Log this error on the server side for investigation
+        # logger.error(f"Error during logout token blocklisting: {e}") # Assuming logger is available
+        # Still return a success-like message to the client as logout shouldn't ideally fail from user's perspective
+        return {"message": "Logout processed with an internal finalization error"}

@@ -1,5 +1,5 @@
 # backend/app/api/ips.py
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, desc
 from sqlalchemy.orm import selectinload
@@ -13,6 +13,8 @@ from app.schemas.ips import (
     IPSEvent, IPSStats
 )
 from app.models.ips import IPSRule as DBRule, IPSEvent as DBEvent
+from ..models.user import User  # Added
+from ..core.security import get_current_active_user  # Added
 # from ..services.ips.engine import IPSEngine
 
 router = APIRouter()
@@ -21,7 +23,8 @@ logger = logging.getLogger("ips_api")
 @router.post("/rules/", response_model=IPSRule, tags=["IPS"])
 async def create_ips_rule(
     rule: IPSRuleCreate, 
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)  # Added
 ):
     """Create a new IPS rule"""
     try:
@@ -31,10 +34,13 @@ async def create_ips_rule(
         )
         if existing.scalar_one_or_none():
             raise HTTPException(
-                status_code=400,
+                status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Rule with ID {rule.rule_id} already exists"
             )
             
+        if not current_user.is_superuser:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator privileges required")
+
         db_rule = DBRule(**rule.dict())
         db.add(db_rule)
         await db.commit()
@@ -49,7 +55,7 @@ async def create_ips_rule(
         logger.error(f"Error creating IPS rule: {str(e)}")
         await db.rollback()
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create IPS rule"
         )
 
@@ -59,7 +65,8 @@ async def list_ips_rules(
     search: Optional[str] = None,
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)  # Added
 ):
     """List all IPS rules with optional filtering"""
     try:
@@ -86,14 +93,15 @@ async def list_ips_rules(
     except Exception as e:
         logger.error(f"Error listing IPS rules: {str(e)}")
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve IPS rules"
         )
 
 @router.get("/rules/{rule_id}", response_model=IPSRule, tags=["IPS"])
 async def get_ips_rule(
     rule_id: str, 
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)  # Added
 ):
     """Get details of a specific IPS rule"""
     try:
@@ -103,14 +111,14 @@ async def get_ips_rule(
         rule = result.scalar_one_or_none()
         if not rule:
             raise HTTPException(
-                status_code=404, 
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail="Rule not found"
             )
         return rule
     except Exception as e:
         logger.error(f"Error getting IPS rule {rule_id}: {str(e)}")
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve IPS rule"
         )
 
@@ -118,7 +126,8 @@ async def get_ips_rule(
 async def update_ips_rule(
     rule_id: str,
     rule_update: IPSRuleUpdate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)  # Added
 ):
     """Update an existing IPS rule"""
     try:
@@ -128,9 +137,12 @@ async def update_ips_rule(
         db_rule = result.scalar_one_or_none()
         if not db_rule:
             raise HTTPException(
-                status_code=404, 
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail="Rule not found"
             )
+
+        if not current_user.is_superuser:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator privileges required")
             
         update_data = rule_update.dict(exclude_unset=True)
         for field, value in update_data.items():
@@ -149,12 +161,13 @@ async def update_ips_rule(
         logger.error(f"Error updating IPS rule {rule_id}: {str(e)}")
         await db.rollback()
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update IPS rule"
         )
 
 @router.get("/events/", response_model=List[IPSEvent], tags=["IPS"])
 async def list_ips_events(
+    current_user: User = Depends(get_current_active_user),  # Added
     severity: Optional[str] = None,
     category: Optional[str] = None,
     rule_id: Optional[str] = None,
@@ -165,7 +178,8 @@ async def list_ips_events(
     hours: int = 24,
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    # current_user: User = Depends(get_current_active_user) # Re-added here, was missing in one spot
 ):
     """List IPS events with filtering options"""
     try:
@@ -199,14 +213,15 @@ async def list_ips_events(
     except Exception as e:
         logger.error(f"Error listing IPS events: {str(e)}")
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve IPS events"
         )
 
 @router.get("/stats/", response_model=IPSStats, tags=["IPS"])
 async def get_ips_stats(
     hours: int = 24,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)  # Added
 ):
     """Get statistical overview of IPS activity"""
     try:
@@ -326,7 +341,7 @@ async def get_ips_stats(
     except Exception as e:
         logger.error(f"Error generating IPS stats: {str(e)}")
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate IPS statistics"
         )
 

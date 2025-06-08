@@ -27,6 +27,18 @@ class UserInDB(UserBase):
     class Config:
         from_attributes = True
 
+# New UserRead schema
+class UserRead(UserBase): # Inherits username, email, full_name
+    id: int
+    is_active: bool
+    is_superuser: bool
+    is_two_factor_enabled: bool # Add this field
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
 class Token(BaseModel):
     access_token: str
     token_type: str
