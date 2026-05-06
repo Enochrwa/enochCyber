@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock # AsyncMock for mocking async service functions
 
 # Adjust these imports to match your project's actual structure
-from app.main import app # Assuming your FastAPI app instance is here
+from main import create_app # Assuming your FastAPI app instance is here
 from app.schemas.threat_analysis import (
     ThreatAnalysisSummary,
     ThreatAnalysisTopType,
@@ -15,6 +15,7 @@ from app.schemas.threat_analysis import (
 )
 # No need to import get_db directly for overriding if using app.dependency_overrides
 
+app = create_app()
 client = TestClient(app)
 
 # Path for patching service functions, adjust if your endpoint file imports services differently

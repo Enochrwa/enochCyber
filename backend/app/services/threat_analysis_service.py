@@ -26,7 +26,7 @@ from app.schemas.threat_analysis import (
 )
 from sqlalchemy import asc # Added for sorting
 from collections import defaultdict # Added for GeoIP aggregation
-from app.utils.geoip_utils import get_country_from_ip # Added for GeoIP lookup
+from app.utils.geo_utils import get_country_from_ip # Added for GeoIP lookup
 
 logger = logging.getLogger(__name__)
 

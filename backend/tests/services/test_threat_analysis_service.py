@@ -24,7 +24,7 @@ from app.services.threat_analysis_service import (
     get_threat_summary,
     get_threat_trends # Added for testing
 )
-from app.utils.geoip_utils import get_country_from_ip # For mocking in get_threat_trends
+from app.utils.geo_utils import get_country_from_ip # For mocking in get_threat_trends
 
 # --- Tests for _parse_raw_data ---
 

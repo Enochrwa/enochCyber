@@ -6,7 +6,8 @@ import time
 import os
 from scapy.all import get_if_list
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
 from multiprocessing import Queue, Manager
@@ -289,6 +290,15 @@ async def create_app() -> FastAPI:
     app.include_router(nac_router, prefix="/nac")
     app.include_router(dns_router, prefix="/dns")
     # Include the ML Models API router
+
+    # Global exception handler for production
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        logger.error(f"Global exception caught: {str(exc)}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "An unexpected error occurred. Please contact support."},
+        )
 
     # Health check endpoint
     @app.get("/api/health", include_in_schema=False)

@@ -26,7 +26,6 @@ from .models.base import Base
 
 
 logger = logging.getLogger(__name__)
-SQLALCHEMY_DATABASE_URL = "sqlite+aiosqlite:///./security.db"
 
 # Create async engine
 engine = create_async_engine(
@@ -53,7 +52,8 @@ async def init_db():
     """Initialize database tables in correct order"""
     async with engine.begin() as conn:
         # Drop all tables first (optional, for development)
-        await conn.run_sync(Base.metadata.drop_all, checkfirst=True)  # Add this line
+        if settings.DEBUG:
+            await conn.run_sync(Base.metadata.drop_all, checkfirst=True)
 
         # First pass: Create tables without foreign key dependencies
         await conn.run_sync(

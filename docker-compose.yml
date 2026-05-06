@@ -1,0 +1,18 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - PRODUCTION=True
+      - DEBUG=False
+    volumes:
+      - ./backend/security.db:/app/security.db
+    restart: always
+
+  # Optional: Redis for scaling
+  # redis:
+  #   image: redis:alpine
+  #   ports:
+  #     - "6379:6379"
