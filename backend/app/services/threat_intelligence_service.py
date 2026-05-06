@@ -138,7 +138,8 @@ class ThreatIntelligenceService:
             test_slice = None
             try:
                 processed_items = []
-                for value in data.values():
+                iterable_data = data.values() if isinstance(data, dict) else data
+                for value in iterable_data:
                     if isinstance(value, dict):
                         # If the value is already a dictionary, add it
                         processed_items.append(value)
